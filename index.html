@@ -1,0 +1,889 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ARONA · 什亭之匣微信助手：蓝白风格 Windows 微信自动回复机器人，支持阿洛娜与普拉娜人格、本地 Ollama / DeepSeek、训练资料检索、图片理解、表情包与管理员指令。">
+  <meta name="theme-color" content="#071426">
+  <script>document.documentElement.classList.add("js");</script>
+  <meta property="og:title" content="ARONA · 什亭之匣微信助手">
+  <meta property="og:description" content="让阿洛娜与普拉娜住在你的微信里。Windows 桌面微信机器人，开源、可训练、可切换人格。">
+  <meta property="og:image" content="https://raw.githubusercontent.com/HaoyeShen/Arona-bot-Windows/main/assets/app_icon.png">
+  <title>ARONA · 什亭之匣微信助手</title>
+  <style>
+    :root {
+      --night: #071426;
+      --night-2: #0b1e35;
+      --night-3: #102945;
+      --card: rgba(16, 43, 70, .82);
+      --card-solid: #102b46;
+      --line: rgba(139, 221, 255, .18);
+      --line-strong: rgba(139, 221, 255, .38);
+      --cyan: #64dcff;
+      --cyan-soft: #b9f1ff;
+      --pink: #ff86bd;
+      --pink-soft: #ffd1e5;
+      --white: #f2fbff;
+      --muted: #9eb9cd;
+      --muted-2: #7394ad;
+      --yellow: #ffd77a;
+      --radius: 22px;
+      --shadow: 0 22px 70px rgba(0, 0, 0, .28);
+      --display: "Bahnschrift", "Segoe UI", "Microsoft YaHei", sans-serif;
+      --body: "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--white);
+      background:
+        radial-gradient(circle at 12% -8%, rgba(100, 220, 255, .16), transparent 32rem),
+        radial-gradient(circle at 88% 12%, rgba(255, 134, 189, .12), transparent 30rem),
+        linear-gradient(180deg, #071426 0%, #081727 48%, #06111e 100%);
+      font-family: var(--body);
+      line-height: 1.7;
+      overflow-x: hidden;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -2;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(100, 220, 255, .035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(100, 220, 255, .035) 1px, transparent 1px);
+      background-size: 44px 44px;
+      mask-image: linear-gradient(to bottom, #000, transparent 78%);
+    }
+    body::after {
+      content: "";
+      position: fixed;
+      width: 40rem;
+      height: 40rem;
+      right: -18rem;
+      top: 28rem;
+      z-index: -1;
+      border: 1px solid rgba(100, 220, 255, .13);
+      border-radius: 50%;
+      box-shadow:
+        0 0 0 4rem rgba(100, 220, 255, .025),
+        0 0 0 8rem rgba(100, 220, 255, .018),
+        0 0 0 12rem rgba(100, 220, 255, .012);
+      pointer-events: none;
+    }
+    ::selection { background: var(--pink); color: var(--night); }
+    a { color: inherit; text-decoration: none; }
+    img { max-width: 100%; display: block; }
+    button { font: inherit; }
+    .wrap { width: min(1160px, calc(100% - 48px)); margin-inline: auto; }
+    .mono { font-family: "Cascadia Code", "Consolas", monospace; }
+    .muted { color: var(--muted); }
+
+    /* ------------------------------- nav ------------------------------- */
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 60;
+      border-bottom: 1px solid rgba(139, 221, 255, .1);
+      background: rgba(7, 20, 38, .78);
+      backdrop-filter: blur(18px);
+    }
+    .nav-inner {
+      height: 72px;
+      display: flex;
+      align-items: center;
+      gap: 28px;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .brand img {
+      width: 42px;
+      height: 42px;
+      border-radius: 13px;
+      border: 1px solid var(--line-strong);
+      box-shadow: 0 0 24px rgba(100, 220, 255, .18);
+    }
+    .brand strong {
+      font-family: var(--display);
+      letter-spacing: .14em;
+      font-size: 15px;
+      line-height: 1.05;
+      display: block;
+    }
+    .brand span {
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: .16em;
+      display: block;
+      margin-top: 3px;
+    }
+    .nav-links { display: flex; gap: 24px; margin-left: auto; font-size: 13px; color: var(--muted); }
+    .nav-links a { transition: color .2s; }
+    .nav-links a:hover { color: var(--cyan); }
+    .nav-cta {
+      margin-left: 10px;
+      padding: 9px 16px;
+      border: 1px solid var(--line-strong);
+      border-radius: 999px;
+      color: var(--cyan-soft);
+      font-size: 12px;
+      letter-spacing: .05em;
+      transition: .2s;
+    }
+    .nav-cta:hover { background: rgba(100, 220, 255, .1); border-color: var(--cyan); }
+
+    /* ------------------------------- hero ------------------------------ */
+    .hero { padding: 76px 0 58px; position: relative; }
+    .hero-grid > * { min-width: 0; }
+    .hero-actions { min-width: 0; }
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.08fr) minmax(320px, .92fr);
+      align-items: center;
+      gap: 54px;
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      color: var(--cyan);
+      font-family: var(--display);
+      font-size: 11px;
+      letter-spacing: .22em;
+      text-transform: uppercase;
+      margin-bottom: 18px;
+    }
+    .eyebrow::before { content: ""; width: 28px; height: 1px; background: var(--cyan); box-shadow: 0 0 12px var(--cyan); }
+    h1 {
+      margin: 0;
+      font-family: var(--display);
+      font-size: clamp(40px, 5vw, 64px);
+      line-height: 1.02;
+      letter-spacing: -.02em;
+      font-weight: 700;
+    }
+    h1 .grad {
+      display: inline-block;
+      white-space: nowrap;
+      background: linear-gradient(100deg, #f5fdff 8%, var(--cyan-soft) 48%, var(--pink-soft) 94%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .hero-sub {
+      margin: 24px 0 0;
+      max-width: 570px;
+      color: #c0d8e8;
+      font-size: 16px;
+      line-height: 1.9;
+    }
+    .hero-sub strong { color: var(--white); font-weight: 500; }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 32px; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      min-height: 46px;
+      padding: 0 22px;
+      border-radius: 13px;
+      border: 1px solid transparent;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: .02em;
+      cursor: pointer;
+      transition: transform .2s, box-shadow .2s, background .2s, border-color .2s;
+    }
+    .btn:hover { transform: translateY(-2px); }
+    .btn-primary {
+      color: #042033;
+      background: linear-gradient(120deg, #7ae6ff, #b9f4ff 55%, #ffc1dd);
+      box-shadow: 0 12px 34px rgba(100, 220, 255, .25);
+    }
+    .btn-primary:hover { box-shadow: 0 16px 42px rgba(100, 220, 255, .34); }
+    .btn-ghost {
+      color: var(--cyan-soft);
+      background: rgba(100, 220, 255, .06);
+      border-color: var(--line-strong);
+    }
+    .btn-ghost:hover { background: rgba(100, 220, 255, .12); border-color: var(--cyan); }
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 18px;
+      color: var(--muted-2);
+      font-size: 12px;
+      margin-top: 22px;
+    }
+    .hero-meta span { display: inline-flex; align-items: center; gap: 7px; }
+    .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--pink); box-shadow: 0 0 10px var(--pink); }
+
+    .hero-art { position: relative; min-height: 460px; display: grid; place-items: center; }
+    .hero-art::before {
+      content: "";
+      position: absolute;
+      width: min(92%, 480px);
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(100, 220, 255, .22), rgba(100, 220, 255, .04) 48%, transparent 68%);
+      filter: blur(2px);
+    }
+    .hero-art .halo {
+      position: absolute;
+      width: min(84%, 440px);
+      aspect-ratio: 1;
+      border: 2px solid rgba(100, 220, 255, .36);
+      border-radius: 50%;
+      transform: rotate(-18deg) scaleY(.36);
+      box-shadow: 0 0 34px rgba(100, 220, 255, .22);
+    }
+    .hero-art .halo::after {
+      content: "";
+      position: absolute;
+      inset: 8px;
+      border: 1px solid rgba(255, 134, 189, .32);
+      border-radius: 50%;
+    }
+    .hero-art img {
+      position: relative;
+      width: min(100%, 480px);
+      filter: drop-shadow(0 26px 45px rgba(0, 0, 0, .36)) drop-shadow(0 0 35px rgba(100, 220, 255, .18));
+      z-index: 2;
+    }
+    .hero-chip {
+      position: absolute;
+      z-index: 3;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 10px 14px;
+      border: 1px solid var(--line-strong);
+      border-radius: 13px;
+      background: rgba(8, 26, 46, .82);
+      backdrop-filter: blur(14px);
+      box-shadow: var(--shadow);
+      font-size: 12px;
+      color: var(--cyan-soft);
+    }
+    .hero-chip i {
+      display: grid;
+      place-items: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 8px;
+      background: rgba(100, 220, 255, .13);
+      color: var(--cyan);
+      font-style: normal;
+      font-size: 12px;
+    }
+    .chip-a { left: 0; top: 56px; }
+    .chip-b { right: 0; bottom: 66px; }
+    .chip-b i { background: rgba(255, 134, 189, .14); color: var(--pink); }
+
+    /* ------------------------------- strip ----------------------------- */
+    .strip {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(110deg, rgba(100, 220, 255, .055), rgba(255, 134, 189, .04));
+      overflow: hidden;
+      margin-bottom: 88px;
+    }
+    .strip-item { padding: 22px 24px; border-right: 1px solid var(--line); }
+    .strip-item:last-child { border-right: 0; }
+    .strip-item b {
+      display: block;
+      font-family: var(--display);
+      font-size: 25px;
+      line-height: 1;
+      color: var(--white);
+      letter-spacing: .01em;
+    }
+    .strip-item span { display: block; margin-top: 8px; color: var(--muted-2); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+
+    /* ------------------------------ sections --------------------------- */
+    section { position: relative; }
+    .section { padding: 78px 0; }
+    .section-head { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 34px; }
+    .section-head h2 {
+      margin: 5px 0 0;
+      font-family: var(--display);
+      font-size: clamp(28px, 4vw, 44px);
+      line-height: 1.1;
+      letter-spacing: -.015em;
+    }
+    .section-head p { max-width: 460px; margin: 0; color: var(--muted); font-size: 14px; }
+    .kicker {
+      color: var(--pink);
+      font-family: var(--display);
+      font-size: 10px;
+      letter-spacing: .24em;
+      text-transform: uppercase;
+    }
+    .kicker::before { content: "// "; color: var(--cyan); }
+
+    /* ------------------------------ features --------------------------- */
+    .features { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .feature {
+      position: relative;
+      min-height: 198px;
+      padding: 22px 20px 20px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background:
+        linear-gradient(145deg, rgba(100, 220, 255, .065), transparent 45%),
+        var(--card);
+      overflow: hidden;
+      transition: transform .24s, border-color .24s, background .24s;
+    }
+    .feature::after {
+      content: "";
+      position: absolute;
+      width: 90px;
+      height: 90px;
+      right: -44px;
+      bottom: -48px;
+      border: 1px solid rgba(100, 220, 255, .18);
+      border-radius: 50%;
+      transition: transform .4s;
+    }
+    .feature:hover { transform: translateY(-4px); border-color: var(--line-strong); background: rgba(16, 43, 70, .95); }
+    .feature:hover::after { transform: scale(1.5); }
+    .feature .num {
+      color: var(--cyan);
+      font-family: var(--display);
+      font-size: 11px;
+      letter-spacing: .18em;
+      margin-bottom: 24px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .feature .num::after { content: ""; width: 18px; height: 1px; background: var(--line-strong); }
+    .feature h3 { margin: 0 0 8px; font-size: 15px; letter-spacing: .01em; }
+    .feature p { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.75; }
+    .feature.pink .num { color: var(--pink); }
+    .feature.pink::after { border-color: rgba(255, 134, 189, .2); }
+
+    /* ----------------------------- screenshots ------------------------- */
+    .shots { display: grid; grid-template-columns: 1.35fr .65fr; gap: 16px; }
+    .shot {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: #0a1d32;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, .2);
+    }
+    .shot img { width: 100%; height: 100%; object-fit: cover; transition: transform .5s; }
+    .shot:hover img { transform: scale(1.02); }
+    .shot-main { grid-row: span 2; min-height: 420px; }
+    .shot-side { min-height: 202px; }
+    .shot-label {
+      position: absolute;
+      left: 14px;
+      bottom: 14px;
+      padding: 7px 11px;
+      border-radius: 9px;
+      background: rgba(4, 15, 28, .78);
+      border: 1px solid var(--line);
+      backdrop-filter: blur(10px);
+      font-size: 11px;
+      color: var(--cyan-soft);
+    }
+
+    /* ------------------------------ quickstart ------------------------- */
+    .quick {
+      display: grid;
+      grid-template-columns: .85fr 1.15fr;
+      gap: 34px;
+      align-items: start;
+    }
+    .quick-copy h2 { margin: 5px 0 16px; font-family: var(--display); font-size: clamp(28px, 4vw, 42px); line-height: 1.15; }
+    .quick-copy p { color: var(--muted); font-size: 14px; }
+    .req { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+    .req span {
+      border: 1px solid var(--line);
+      background: rgba(100, 220, 255, .04);
+      border-radius: 999px;
+      padding: 5px 10px;
+      color: var(--cyan-soft);
+      font-size: 11px;
+    }
+    .steps { display: grid; gap: 10px; }
+    .step {
+      display: grid;
+      grid-template-columns: 38px 1fr;
+      gap: 14px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--card);
+    }
+    .step .n {
+      display: grid;
+      place-items: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 9px;
+      background: rgba(100, 220, 255, .1);
+      border: 1px solid var(--line-strong);
+      color: var(--cyan);
+      font-family: var(--display);
+      font-size: 12px;
+    }
+    .step h3 { margin: 0 0 4px; font-size: 13px; }
+    .step p { margin: 0; color: var(--muted); font-size: 12px; }
+    .code {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: rgba(2, 12, 23, .7);
+      border: 1px solid rgba(139, 221, 255, .1);
+      color: var(--cyan-soft);
+      font-size: 11px;
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+    .code code { font-family: "Cascadia Code", "Consolas", monospace; }
+    .copy {
+      margin-left: auto;
+      border: 0;
+      background: transparent;
+      color: var(--muted-2);
+      cursor: pointer;
+      font-size: 11px;
+      white-space: nowrap;
+      padding: 2px 4px;
+    }
+    .copy:hover { color: var(--cyan); }
+
+    /* ------------------------------ commands --------------------------- */
+    .commands {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .cmd {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 13px 15px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(16, 43, 70, .55);
+    }
+    .cmd code {
+      min-width: 58px;
+      color: var(--pink-soft);
+      font-family: "Cascadia Code", "Consolas", monospace;
+      font-size: 12px;
+    }
+    .cmd span { color: var(--muted); font-size: 12px; }
+    .notice {
+      margin-top: 18px;
+      padding: 14px 16px;
+      border-left: 2px solid var(--pink);
+      background: rgba(255, 134, 189, .045);
+      color: var(--muted);
+      font-size: 12px;
+      border-radius: 0 10px 10px 0;
+    }
+    .notice strong { color: var(--pink-soft); }
+
+    /* ------------------------------- download -------------------------- */
+    .download {
+      position: relative;
+      overflow: hidden;
+      padding: 50px;
+      border: 1px solid var(--line-strong);
+      border-radius: 26px;
+      background:
+        radial-gradient(circle at 88% 20%, rgba(255, 134, 189, .18), transparent 24rem),
+        radial-gradient(circle at 8% 92%, rgba(100, 220, 255, .16), transparent 26rem),
+        linear-gradient(125deg, #0b223b, #102c4a 54%, #0b1d31);
+      box-shadow: var(--shadow);
+    }
+    .download::before {
+      content: "ARONA";
+      position: absolute;
+      right: -12px;
+      bottom: -52px;
+      font-family: var(--display);
+      font-weight: 800;
+      font-size: clamp(90px, 18vw, 210px);
+      letter-spacing: -.06em;
+      color: rgba(185, 241, 255, .035);
+      pointer-events: none;
+    }
+    .download-inner { position: relative; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 32px; flex-wrap: wrap; }
+    .download h2 { margin: 7px 0 8px; font-family: var(--display); font-size: clamp(30px, 4vw, 50px); line-height: 1.1; }
+    .download p { margin: 0; color: var(--muted); max-width: 520px; font-size: 13px; }
+    .download-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    .download-actions .btn { min-height: 44px; }
+    .release-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 10px;
+      border: 1px solid rgba(100, 220, 255, .25);
+      border-radius: 999px;
+      color: var(--cyan-soft);
+      font-size: 10px;
+      letter-spacing: .1em;
+    }
+    .release-pill i { width: 6px; height: 6px; border-radius: 50%; background: #65f0c3; box-shadow: 0 0 10px #65f0c3; }
+
+    /* ------------------------------- footer ---------------------------- */
+    footer {
+      margin-top: 74px;
+      border-top: 1px solid rgba(139, 221, 255, .09);
+      padding: 26px 0 38px;
+      color: var(--muted-2);
+      font-size: 11px;
+    }
+    .footer-inner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; }
+    .footer-inner nav { display: flex; gap: 18px; }
+    .footer-inner a:hover { color: var(--cyan); }
+    .footer-mark { color: var(--cyan); font-family: var(--display); letter-spacing: .16em; }
+
+    /* ----------------------------- reveal ------------------------------ */
+    .js .reveal { opacity: 0; transform: translateY(16px); transition: opacity .65s ease, transform .65s ease; }
+    .js .reveal.in { opacity: 1; transform: none; }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+      .js .reveal { opacity: 1; transform: none; }
+    }
+
+    /* ----------------------------- responsive -------------------------- */
+    @media (max-width: 980px) {
+      .hero-grid { grid-template-columns: 1fr; gap: 20px; }
+      .hero-art { min-height: 360px; order: -1; }
+      .hero-art img { width: min(78%, 360px); }
+      .hero-art .halo { width: min(66%, 330px); }
+      .hero { padding-top: 42px; }
+      .features { grid-template-columns: repeat(2, 1fr); }
+      .quick { grid-template-columns: 1fr; gap: 24px; }
+      .shots { grid-template-columns: 1fr; }
+      .shot-main { grid-row: auto; min-height: 260px; }
+      .shot-side { min-height: 180px; }
+      .strip { grid-template-columns: repeat(2, 1fr); }
+      .strip-item:nth-child(2) { border-right: 0; }
+      .strip-item:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+    }
+    @media (max-width: 720px) {
+      .wrap { width: min(calc(100% - 30px), 1160px); }
+      .nav-inner { height: 62px; gap: 12px; }
+      .nav-links { display: none; }
+      .nav-cta { margin-left: auto; padding: 8px 12px; }
+      .brand img { width: 36px; height: 36px; }
+      .brand strong { font-size: 13px; }
+      .brand span { font-size: 9px; }
+      .hero { padding: 28px 0 42px; }
+      h1 { font-size: 36px; }
+      h1 .grad { display: inline; white-space: normal; }
+      .hero-sub { font-size: 14px; }
+      .hero-actions .btn { flex: 1 1 180px; }
+      .hero-chip { padding: 8px 10px; font-size: 10px; }
+      .chip-a { left: 2px; top: 12px; }
+      .chip-b { right: 2px; bottom: 14px; }
+      .features { grid-template-columns: 1fr; }
+      .feature { min-height: auto; }
+      .section { padding: 54px 0; }
+      .section-head { align-items: start; flex-direction: column; gap: 8px; }
+      .commands { grid-template-columns: 1fr; }
+      .download { padding: 30px 22px; }
+      .download-inner { align-items: flex-start; }
+      .download-actions { width: 100%; }
+      .download-actions .btn { flex: 1 1 160px; }
+      .footer-inner { align-items: flex-start; flex-direction: column; }
+      .footer-inner nav { flex-wrap: wrap; gap: 10px 16px; }
+    }
+    @media (max-width: 430px) {
+      .strip-item { padding: 16px; }
+      .strip-item b { font-size: 21px; }
+      .strip-item span { font-size: 9px; }
+      .hero-art { min-height: 285px; }
+      .hero-art img { width: 72%; }
+    }
+  </style>
+</head>
+<body>
+  <header class="nav">
+    <div class="wrap nav-inner">
+      <a class="brand" href="#top" aria-label="ARONA 首页">
+        <img src="assets/app_icon.png" alt="ARONA 应用图标">
+        <span>
+          <strong>ARONA</strong>
+          <span>SHITTIM CHEST ASSISTANT</span>
+        </span>
+      </a>
+      <nav class="nav-links" aria-label="页面导航">
+        <a href="#features">功能</a>
+        <a href="#screenshots">界面</a>
+        <a href="#start">开始使用</a>
+        <a href="#commands">指令</a>
+        <a href="#download">下载</a>
+      </nav>
+      <a class="nav-cta" href="https://github.com/HaoyeShen/Arona-bot-Windows/releases/latest" target="_blank" rel="noopener">
+        GitHub ↗
+      </a>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div>
+          <div class="eyebrow">SCHALE / LOCAL DESKTOP ASSISTANT</div>
+          <h1>让阿洛娜<br><span class="grad">住在你的微信里。</span></h1>
+          <p class="hero-sub">
+            ARONA 是一个运行在 Windows 桌面的微信自动回复机器人。
+            默认人格是《蔚蓝档案》的 <strong>阿洛娜</strong>，也可以切换到
+            <strong>普拉娜</strong>，或创建属于你的新人格。
+          </p>
+          <p class="hero-sub" style="margin-top:10px;font-size:14px;">
+            支持本地 Ollama、DeepSeek / OpenAI 兼容 API、训练资料检索、图片理解、
+            表情包、群聊概率回复和管理员指令。所有聊天数据都保存在本机。
+          </p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href="https://github.com/HaoyeShen/Arona-bot-Windows/releases/latest" target="_blank" rel="noopener">
+              ↓ 下载最新版
+            </a>
+            <a class="btn btn-ghost" href="https://github.com/HaoyeShen/Arona-bot-Windows" target="_blank" rel="noopener">
+              ★ 查看 GitHub
+            </a>
+          </div>
+          <div class="hero-meta">
+            <span><i class="dot"></i> 最新版本 v1.2.0</span>
+            <span>Windows 10 / 11</span>
+            <span>MIT License</span>
+            <span>非官方粉丝项目</span>
+          </div>
+        </div>
+        <div class="hero-art" aria-hidden="true">
+          <div class="halo"></div>
+          <img src="assets/arona_hero.png" alt="">
+          <div class="hero-chip chip-a"><i>✦</i> 阿洛娜 / 普拉娜</div>
+          <div class="hero-chip chip-b"><i>⌁</i> 本地优先 · 数据留在本机</div>
+        </div>
+      </div>
+    </section>
+
+    <div class="wrap">
+      <div class="strip reveal">
+        <div class="strip-item"><b>2</b><span>可切换人格</span></div>
+        <div class="strip-item"><b>23</b><span>单条消息字数上限</span></div>
+        <div class="strip-item"><b>RAG</b><span>本地训练资料检索</span></div>
+        <div class="strip-item"><b>0</b><span>截图 / 录屏</span></div>
+      </div>
+    </div>
+
+    <section class="section" id="features">
+      <div class="wrap">
+        <div class="section-head reveal">
+          <div>
+            <div class="kicker">CORE FEATURES</div>
+            <h2>她不只是自动回复。</h2>
+          </div>
+          <p>从模型选择、人格、训练资料到群聊规则，所有东西都可以在桌面端调整。</p>
+        </div>
+        <div class="features">
+          <article class="feature reveal"><div class="num">01 / PERSONA</div><h3>双人格自由切换</h3><p>阿洛娜与普拉娜内置人格，可在私聊或不同群聊中分别使用，也支持编辑和新增。</p></article>
+          <article class="feature reveal"><div class="num">02 / MODEL</div><h3>本地与 API 皆可</h3><p>Ollama 本地模型、DeepSeek 及 OpenAI 兼容接口。无需把聊天记录交给不信任的服务。</p></article>
+          <article class="feature reveal"><div class="num">03 / MEMORY</div><h3>训练资料检索</h3><p>上传 txt、md、pdf、docx 等资料，建立本地知识库；回复前理解消息并检索相关片段。</p></article>
+          <article class="feature reveal pink"><div class="num">04 / VISION</div><h3>读懂对方图片</h3><p>从微信本地缓存解密图片，交给视觉模型生成描述，再进入正常回复上下文；Token 计入统计。</p></article>
+          <article class="feature reveal"><div class="num">05 / STICKER</div><h3>会发表情包</h3><p>根据情绪与语境从本地表情库选择，支持自定义表情包；不会为了用而用。</p></article>
+          <article class="feature reveal"><div class="num">06 / GROUP</div><h3>群聊规则可控</h3><p>每个群独立回复概率；被 @ 时必回；可设置只认 @阿洛娜 / @ARONA，避免对群聊刷屏。</p></article>
+          <article class="feature reveal pink"><div class="num">07 / ADMIN</div><h3>管理员指令</h3><p>密码 + 管理员名单双重限制，支持重置上下文、调试、暂停回复和自动恢复。</p></article>
+          <article class="feature reveal"><div class="num">08 / CONTEXT</div><h3>长上下文摘要</h3><p>超过阈值后自动把旧对话压缩成摘要，只把摘要和最近消息交给模型，控制成本与延迟。</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="screenshots">
+      <div class="wrap">
+        <div class="section-head reveal">
+          <div>
+            <div class="kicker">INTERFACE / BLUE ARCHIVE STYLE</div>
+            <h2>蓝白、青色与粉色。</h2>
+          </div>
+          <p>不是命令行黑框，也不是普通后台。这是一个真正像“什亭之匣”的桌面界面。</p>
+        </div>
+        <div class="shots reveal">
+          <a class="shot shot-main" href="docs/screenshots/dashboard.png" target="_blank" rel="noopener">
+            <img src="docs/screenshots/dashboard.png" alt="ARONA 控制台界面" loading="lazy">
+            <span class="shot-label">控制台 · 实时状态与速聊</span>
+          </a>
+          <a class="shot shot-side" href="docs/screenshots/debug.png" target="_blank" rel="noopener">
+            <img src="docs/screenshots/debug.png" alt="ARONA 调试台" loading="lazy">
+            <span class="shot-label">调试台</span>
+          </a>
+          <a class="shot shot-side" href="docs/screenshots/models.png" target="_blank" rel="noopener">
+            <img src="docs/screenshots/models.png" alt="ARONA 模型与 API" loading="lazy">
+            <span class="shot-label">模型与 API</span>
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="start">
+      <div class="wrap quick">
+        <div class="quick-copy reveal">
+          <div class="kicker">QUICK START</div>
+          <h2>四步开始。</h2>
+          <p>无需编译、无需配置复杂服务。下载源码，安装依赖，启动程序，然后添加你想监听的微信会话。</p>
+          <div class="req">
+            <span>Windows 10 / 11</span>
+            <span>Python 3.12</span>
+            <span>微信 4.1.15</span>
+            <span>Ollama 可选</span>
+          </div>
+        </div>
+        <div class="steps">
+          <div class="step reveal">
+            <div class="n">01</div>
+            <div>
+              <h3>下载项目</h3>
+              <p>从 GitHub Release 下载最新源码压缩包。</p>
+              <div class="code"><code>github.com/HaoyeShen/Arona-bot-Windows</code><button class="copy" data-copy="https://github.com/HaoyeShen/Arona-bot-Windows">复制</button></div>
+            </div>
+          </div>
+          <div class="step reveal">
+            <div class="n">02</div>
+            <div>
+              <h3>安装依赖</h3>
+              <p>双击项目目录中的「安装依赖.bat」，等待虚拟环境初始化完成。</p>
+              <div class="code"><code>安装依赖.bat</code><button class="copy" data-copy="安装依赖.bat">复制</button></div>
+            </div>
+          </div>
+          <div class="step reveal">
+            <div class="n">03</div>
+            <div>
+              <h3>启动 ARONA</h3>
+              <p>双击「启动 ARONA.bat」，程序会自动检查微信连接并打开桌面界面。</p>
+              <div class="code"><code>启动 ARONA.bat</code><button class="copy" data-copy="启动 ARONA.bat">复制</button></div>
+            </div>
+          </div>
+          <div class="step reveal">
+            <div class="n">04</div>
+            <div>
+              <h3>添加监听对象</h3>
+              <p>在「监听对象」添加好友或群聊，选择人格和回复概率，点击启动机器人。</p>
+              <div class="code"><code>监听对象 → 添加 → 启动机器人</code><button class="copy" data-copy="监听对象 → 添加 → 启动机器人">复制</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="commands">
+      <div class="wrap">
+        <div class="section-head reveal">
+          <div>
+            <div class="kicker">ADMIN COMMANDS</div>
+            <h2>只属于你的控制台。</h2>
+          </div>
+          <p>管理员模式需要密码 + 管理员名单双重验证；只有通过验证的发送者可以下指令。</p>
+        </div>
+        <div class="commands reveal">
+          <div class="cmd"><code>/admin</code><span>请求管理员密码，验证成功后进入管理员模式</span></div>
+          <div class="cmd"><code>/reset</code><span>清空当前会话的上下文记忆</span></div>
+          <div class="cmd"><code>/test</code><span>直接发送一条调试信息，不调用模型或 API</span></div>
+          <div class="cmd"><code>/off</code><span>暂停当前会话智能回复一小时，一小时后自动恢复</span></div>
+          <div class="cmd"><code>/start</code><span>恢复当前会话智能回复</span></div>
+          <div class="cmd"><code>/end</code><span>询问是否保存修改，使用 /yes 或 /no 退出</span></div>
+        </div>
+        <div class="notice reveal">
+          <strong>安全提示：</strong>首次使用请到「设置 → 管理员指令」修改默认密码，并把你的微信昵称或 wxid 加入管理员名单。
+          管理员模式会暂停所有会话的智能回复与模型调用。
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="download">
+      <div class="wrap">
+        <div class="download reveal">
+          <div class="download-inner">
+            <div>
+              <div class="release-pill"><i></i> LATEST RELEASE · v1.2.0</div>
+              <h2>带阿洛娜回家。</h2>
+              <p>开源、免费、可自行修改。下载源码后按 README 配置模型和微信连接即可。</p>
+            </div>
+            <div class="download-actions">
+              <a class="btn btn-primary" href="https://github.com/HaoyeShen/Arona-bot-Windows/releases/latest" target="_blank" rel="noopener">下载 Release</a>
+              <a class="btn btn-ghost" href="https://github.com/HaoyeShen/Arona-bot-Windows/archive/refs/heads/main.zip" target="_blank" rel="noopener">下载源码 ZIP</a>
+              <a class="btn btn-ghost" href="https://github.com/HaoyeShen/Arona-bot-Windows" target="_blank" rel="noopener">GitHub 仓库</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap footer-inner">
+      <div>
+        <span class="footer-mark">ARONA</span>
+        <span class="muted"> · 什亭之匣微信助手 · 非腾讯 / 非《蔚蓝档案》官方产品</span>
+      </div>
+      <nav aria-label="页脚链接">
+        <a href="https://github.com/HaoyeShen/Arona-bot-Windows" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/HaoyeShen/Arona-bot-Windows/releases" target="_blank" rel="noopener">Releases</a>
+        <a href="https://github.com/HaoyeShen/Arona-bot-Windows/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
+        <a href="https://github.com/HaoyeShen/Arona-bot-Windows/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script>
+    (() => {
+      const copyButtons = document.querySelectorAll("[data-copy]");
+      copyButtons.forEach((button) => {
+        button.addEventListener("click", async () => {
+          const text = button.getAttribute("data-copy") || "";
+          try {
+            await navigator.clipboard.writeText(text);
+          } catch (_) {
+            const area = document.createElement("textarea");
+            area.value = text;
+            document.body.appendChild(area);
+            area.select();
+            document.execCommand("copy");
+            area.remove();
+          }
+          const old = button.textContent;
+          button.textContent = "已复制";
+          button.style.color = "var(--cyan)";
+          setTimeout(() => {
+            button.textContent = old;
+            button.style.color = "";
+          }, 1200);
+        });
+      });
+
+      if ("IntersectionObserver" in window) {
+        const observer = new IntersectionObserver((entries) => {
+          entries.forEach((entry) => {
+            if (entry.isIntersecting) {
+              entry.target.classList.add("in");
+              observer.unobserve(entry.target);
+            }
+          });
+        }, { threshold: 0.08 });
+        document.querySelectorAll(".reveal").forEach((el) => observer.observe(el));
+      } else {
+        document.querySelectorAll(".reveal").forEach((el) => el.classList.add("in"));
+      }
+    })();
+  </script>
+</body>
+</html>

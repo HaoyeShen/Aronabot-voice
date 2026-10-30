@@ -1,0 +1,3 @@
+# ARONA base runtime.  No wxauto package is used or installed.
+Pillow>=10.0.0
+pypdf>=4.0
