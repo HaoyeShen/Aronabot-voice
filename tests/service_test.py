@@ -178,7 +178,8 @@ def main() -> int:
             assert probability_reply["chat"] == "测试群"
             assert len(adapter.sent) == 4
 
-            # Turning off @-always makes an @ follow the probability (0%).
+            # An @ still must get a reply even when the legacy @-always toggle
+            # is off; the requirement is stronger than the old probability rule.
             config.bot["group_at_always_reply"] = False
             config.bot["group_reply_probability"] = 0.0
             group_target["group_reply_probability"] = 0.0
@@ -188,7 +189,7 @@ def main() -> int:
                 chat_type="group",
             ))
             time.sleep(0.4)
-            assert len(adapter.sent) == 4, "@-always off falls back to probability"
+            assert len(adapter.sent) == 5, "@ must always get a reply"
         finally:
             service.stop()
             service.memory.close()

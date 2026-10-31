@@ -719,6 +719,7 @@ class BotService:
             return
         group_at_me = False
         group_at_always = False
+        group_force_reply = False
         if incoming.is_group:
             include_self_name = bool(self.config.bot.get("group_at_include_self_name", True))
             self_name = self._adapter.self_name if self._adapter else ""
@@ -737,6 +738,7 @@ class BotService:
             at_always = bool(self.config.bot.get("group_at_always_reply", True))
             group_at_me = at_me or trigger_hit
             group_at_always = at_always
+            group_force_reply = at_me
             probability_enabled = bool(
                 self.config.bot.get("group_probability_reply", True)
             )
@@ -748,7 +750,7 @@ class BotService:
             if self_mentioned and not include_self_name and not at_persona:
                 should_reply = False
                 reason = "群聊只回复 @阿洛娜/@ARONA，忽略 @登录昵称"
-            elif at_me and at_always:
+            elif at_me:
                 should_reply = True
                 reason = "群聊 @ 必回复"
             elif trigger_hit:
@@ -817,7 +819,8 @@ class BotService:
             log.info("会话冷却中，暂不回复：%s", incoming.chat)
             return
 
-        self._generate_and_send(incoming, target, row_id, content)
+        self._generate_and_send(incoming, target, row_id, content,
+                                force_reply=group_force_reply)
 
     def _store_user(self, incoming: IncomingMessage, content: str) -> int | None:
         try:
@@ -1141,6 +1144,44 @@ class BotService:
             value,
         ))
 
+    def _split_reply_messages(self, raw: str, stickers: list[dict],
+                              allow_sticker: bool, max_chars: int,
+                              max_sentence_chars: int) -> list[str]:
+        """Split a longer complete reply into several complete WeChat messages."""
+        natural = self._natural_reply_text(raw, stickers, allow_sticker)
+        if not natural:
+            return []
+        limit = max(8, min(max_chars, max_sentence_chars))
+        chunks = []
+        for sentence in re.split(r"(?<=[。！？!?；;])", natural):
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            if len(sentence) <= limit:
+                chunks.append(sentence)
+                continue
+            # A single long sentence: split at commas into complete clauses.
+            current = ""
+            for part in re.split(r"(?<=[，,、])", sentence):
+                part = part.strip()
+                if not part:
+                    continue
+                if len(current + part) <= limit:
+                    current += part
+                    continue
+                if current:
+                    chunks.append(current.rstrip("，,、；;：: ") + "。")
+                    current = ""
+                while len(part) > limit:
+                    cut = part[:limit - 1]
+                    chunks.append(cut.rstrip("，,、；;：: ") + "。")
+                    part = part[limit - 1:].lstrip("，,、；;：: ")
+                current = part
+            if current:
+                chunks.append(current.rstrip("，,、；;：: ") + "。")
+        # Do not spam more than six bubbles for one @.
+        return [chunk for chunk in chunks if chunk.strip()][:6]
+
     def _natural_reply_text(self, raw: str, stickers: list[dict], allow_sticker: bool) -> str:
         text, _ = parse_reply(
             raw, stickers, max_chars=100000, max_sentence_chars=100000,
@@ -1163,8 +1204,13 @@ class BotService:
             except Exception:
                 pass
             from wecvoice_auto import VoiceSender
+            from wecvoice_auto.config import Config as VoiceConfig
             if self._voice_sender is None:
-                self._voice_sender = VoiceSender()
+                voice_config = VoiceConfig.load()
+                # Hold the right Alt key one extra second after the clip;
+                # the WeChat recorder otherwise clips the final syllable.
+                voice_config.tail_seconds = max(0.3, voice_config.tail_seconds) + 1.0
+                self._voice_sender = VoiceSender(config=voice_config)
             result = self._voice_sender.send(
                 text,
                 chat=chat,
@@ -1187,7 +1233,7 @@ class BotService:
         return text
 
     def _generate_and_send(self, incoming: IncomingMessage, target: dict, row_id: int,
-                           user_content: str) -> None:
+                           user_content: str, force_reply: bool = False) -> None:
         persona = self.personas.get(target.get("persona_id") or self.config.data.get("active_persona_id"))
         context_limit = max(20, int(target.get("context_limit") or
                                     self.config.bot.get("context_limit", 30)))
@@ -1251,6 +1297,7 @@ class BotService:
             return
 
         allow_sticker = bool(stickers) and int(self.config.bot.get("max_stickers_per_reply", 1)) > 0
+        forced_messages: list[str] = []
         natural = self._natural_reply_text(result.text, stickers, allow_sticker)
         if (len(natural) > max_chars or self._looks_incomplete_reply(natural)):
             repair_system = system + (
@@ -1268,13 +1315,31 @@ class BotService:
                         and not self._looks_incomplete_reply(repaired_natural)):
                     result = repaired
                 else:
-                    log.warning("重写后回复仍不完整或超长，已跳过发送：%s", incoming.chat)
+                    if force_reply:
+                        forced_messages = self._split_reply_messages(
+                            repaired.text, stickers, allow_sticker,
+                            max_chars, max_sentence_chars,
+                        )
+                        if forced_messages:
+                            result = repaired
+                        else:
+                            log.warning("重写后仍无法拆成完整回复：%s", incoming.chat)
+                            self.emit("typing_done", {"chat": incoming.chat})
+                            return
+                    else:
+                        log.warning("重写后回复仍不完整或超长，已跳过发送：%s", incoming.chat)
+                        self.emit("typing_done", {"chat": incoming.chat})
+                        return
+            except Exception as exc:
+                if force_reply:
+                    forced_messages = self._split_reply_messages(
+                        natural, stickers, allow_sticker,
+                        max_chars, max_sentence_chars,
+                    )
+                if not forced_messages:
+                    log.warning("回复重写失败，已跳过发送：%s", exc)
                     self.emit("typing_done", {"chat": incoming.chat})
                     return
-            except Exception as exc:
-                log.warning("回复重写失败，已跳过发送：%s", exc)
-                self.emit("typing_done", {"chat": incoming.chat})
-                return
         text, chosen = parse_reply(
             result.text, stickers,
             max_chars=max_chars,
@@ -1282,6 +1347,9 @@ class BotService:
             max_sentences=2,
             allow_sticker=allow_sticker,
         )
+        if forced_messages:
+            text = forced_messages[0]
+            chosen = None
         text = self._apply_reply_style(text)
         if chosen is None and allow_sticker and not is_serious(user_content):
             chosen = select_fallback_sticker(
@@ -1321,37 +1389,52 @@ class BotService:
             )))
         except (TypeError, ValueError):
             voice_probability = 0.5
-        if (text and voice_enabled and not is_serious(user_content)
+        outgoing_messages = forced_messages or ([text] if text else [])
+        try:
+            voice_max_chars = max(8, min(60, int(
+                self.config.bot.get("voice_max_chars", 30)
+            )))
+        except (TypeError, ValueError):
+            voice_max_chars = 30
+        if (len(outgoing_messages) == 1 and outgoing_messages[0]
+                and len(outgoing_messages[0]) <= voice_max_chars
+                and voice_enabled and not is_serious(user_content)
                 and random.random() < voice_probability):
-            voice_sent = self._send_voice_reply(incoming.chat, text)
+            voice_sent = self._send_voice_reply(incoming.chat, outgoing_messages[0])
             if voice_sent:
                 sent_text = True
                 send_message = "语音气泡"
                 chosen = None
-        if text and not voice_sent:
-            quote_enabled = bool(self.config.bot.get("quote_reply", False))
-            if quote_enabled and hasattr(self._adapter, "send_quoted_text"):
-                send_result = self._adapter.send_quoted_text(
-                    incoming.chat, text, quote_text=incoming.content or ""
-                )
+                outgoing_messages = []
+        if outgoing_messages and not voice_sent:
+            for index, outgoing in enumerate(outgoing_messages):
+                if not outgoing.strip():
+                    continue
+                quote_enabled = bool(self.config.bot.get("quote_reply", False))
+                if index == 0 and quote_enabled and hasattr(self._adapter, "send_quoted_text"):
+                    send_result = self._adapter.send_quoted_text(
+                        incoming.chat, outgoing, quote_text=incoming.content or ""
+                    )
+                    if not send_result.ok:
+                        log.warning("引用发送失败，改为普通发送：%s · %s",
+                                    incoming.chat, send_result.message)
+                        send_result = self._adapter.send_text(incoming.chat, outgoing)
+                else:
+                    send_result = self._adapter.send_text(incoming.chat, outgoing)
                 if not send_result.ok:
-                    log.warning("引用发送失败，改为普通发送：%s · %s",
-                                incoming.chat, send_result.message)
-                    send_result = self._adapter.send_text(incoming.chat, text)
-            else:
-                send_result = self._adapter.send_text(incoming.chat, text)
-            if not send_result.ok:
-                log.error("发送文字到 %s 失败：%s %s", incoming.chat,
-                          send_result.message, send_result.detail)
-                self._update(errors=self._state.get("errors", 0) + 1,
-                             last_error=f"发送失败：{send_result.message}")
-                self.emit("error", {"message": f"发送失败：{send_result.message}"})
-                self.emit("typing_done", {"chat": incoming.chat})
-                return
-            sent_text = True
-            send_message = send_result.message
-            self._remember_bot_sent(incoming.chat, text)
-        if chosen and not voice_sent:
+                    log.error("发送文字到 %s 失败：%s %s", incoming.chat,
+                              send_result.message, send_result.detail)
+                    self._update(errors=self._state.get("errors", 0) + 1,
+                                 last_error=f"发送失败：{send_result.message}")
+                    self.emit("error", {"message": f"发送失败：{send_result.message}"})
+                    self.emit("typing_done", {"chat": incoming.chat})
+                    return
+                sent_text = True
+                send_message = send_result.message
+                self._remember_bot_sent(incoming.chat, outgoing)
+                if index < len(outgoing_messages) - 1:
+                    time.sleep(0.5)
+        if chosen and not voice_sent and len(outgoing_messages) <= 1:
             sticker_path = self.stickers.path_for(chosen)
             sticker_result = self._adapter.send_sticker(incoming.chat, sticker_path)
             if sticker_result.ok:
@@ -1365,7 +1448,7 @@ class BotService:
             self.emit("typing_done", {"chat": incoming.chat})
             return
 
-        reply_text = text or ""
+        reply_text = " ".join(outgoing_messages) if outgoing_messages else (text or "")
         latency = result.latency_ms
         self.memory.add_assistant(
             incoming.chat,

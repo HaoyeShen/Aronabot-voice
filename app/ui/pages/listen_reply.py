@@ -171,6 +171,12 @@ class ListenReplyPage(BasePage):
             hint="默认 50", width=8,
         )
         self.voice_probability.pack(fill="x", pady=(px(4), px(3)))
+        self.voice_max_chars = LabeledEntry(
+            voice.body, "语音最多字数",
+            str(self.config.bot.get("voice_max_chars", 30)),
+            hint="默认 30", width=8,
+        )
+        self.voice_max_chars.pack(fill="x", pady=(px(3), px(3)))
         tk.Label(
             voice.body,
             text="需要 WecVoice-auto、VB-CABLE 虚拟声卡和微信语音权限；语音音色默认阿洛娜。",
@@ -218,6 +224,9 @@ class ListenReplyPage(BasePage):
             voice_probability = max(0, min(100, int(float(
                 self.voice_probability.get() or 50
             ))))
+            voice_max_chars = max(8, min(60, int(
+                self.voice_max_chars.get() or 30
+            )))
             for value in (self.quiet_start.get(), self.quiet_end.get()):
                 if value:
                     datetime.strptime(value, "%H:%M")
@@ -240,6 +249,7 @@ class ListenReplyPage(BasePage):
             "group_reply_probability": probability / 100.0,
             "voice_enabled": self.voice_enabled.get(),
             "voice_probability": voice_probability / 100.0,
+            "voice_max_chars": voice_max_chars,
             "stale_reply_minutes": stale,
             "quote_reply": self.quote_reply.get(),
             "replace_punctuation": self.replace_punctuation.get(),

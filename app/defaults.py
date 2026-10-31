@@ -76,6 +76,7 @@ DEFAULT_CONFIG = {
         "voice_enabled": False,
         "voice_probability": 0.5,
         "voice_name": "arona",
+        "voice_max_chars": 30,
         "replace_punctuation": False,
         "trigger_enabled": True,
         "trigger_keywords": ["阿洛娜", "Arona", "ARONA"],

@@ -145,17 +145,23 @@ class BaseWeChatAdapter:
             return False
         if uia.current_chat() != chat and not uia.open_chat(chat):
             return False
-        needle = re.sub(r"\s+", "", quote_text)[:32]
-        if not needle:
+        cleaned = re.sub(r"^\s*@\S+\s*", "", quote_text)
+        cleaned = re.sub(r"^\s*\[[^\]]+\]\s*", "", cleaned)
+        candidates = []
+        for value in (quote_text, cleaned):
+            needle = re.sub(r"\s+", "", value)[:40]
+            if needle and needle not in candidates:
+                candidates.append(needle)
+        if not candidates:
             return False
 
         def predicate(class_name: str, name: str) -> bool:
             normalized = re.sub(r"\s+", "", name or "")
-            return (needle in normalized and
+            return (any(needle in normalized for needle in candidates) and
                     not normalized.startswith("引用") and
                     "ChatTextItemView" in class_name)
 
-        found = uia.find_in_message_list(predicate, max_scrolls=12)
+        found = uia.find_in_message_list(predicate, max_scrolls=20)
         if not found:
             return False
         _class_name, _name, rect = found
