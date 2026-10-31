@@ -617,38 +617,112 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
         with self._ui_lock:
             return self._open_chat(chat)
 
+    @staticmethod
+    def _find_chat_tab(uia):
+        win = getattr(uia, "_win", None)
+        if win is None:
+            return None
+        found = [None]
+
+        def walk(ctrl, depth=0):
+            if found[0] is not None or depth > 20:
+                return
+            try:
+                children = ctrl.GetChildren()
+            except Exception:
+                return
+            for child in children:
+                try:
+                    if (child.ClassName or "") == "mmui::XTabBarItem" and \
+                            (child.Name or "").strip() == "微信":
+                        found[0] = child
+                        return
+                except Exception:
+                    pass
+                walk(child, depth + 1)
+
+        walk(win)
+        return found[0]
+
+    def _prepare_chat_window(self, uia) -> None:
+        """Restore a wide chat page before searching for a contact.
+
+        WeChat keeps a previously opened conversation in a narrow window even
+        after clicking the chat tab; the search box then has no UIA node.  A
+        normal/maximized window materialises the chat page again.
+        """
+        try:
+            win = getattr(uia, "_win", None)
+            hwnd = int(getattr(win, "NativeWindowHandle", 0) or 0) if win else 0
+            if hwnd:
+                rect = win.BoundingRectangle
+                width = int(rect.right - rect.left)
+                height = int(rect.bottom - rect.top)
+                if width < 900 or height < 600:
+                    ctypes.windll.user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
+                    time.sleep(0.8)
+            if not uia.ensure_window():
+                return
+            uia.ensure_materialized(timeout=4)
+            uia.back_to_chat_tab(settle=0.8, max_clicks=3)
+            # back_to_chat_tab's readiness probe can report False while the
+            # tree is actually usable.  Click the visible WeChat tab
+            # explicitly as a fallback, then re-check the chat input.
+            try:
+                if uia.current_chat() is None:
+                    tab = self._find_chat_tab(uia)
+                    if tab is not None:
+                        uia._click_ctrl(tab)
+                        time.sleep(0.8)
+                    if uia.current_chat() is None:
+                        tab = self._find_chat_tab(uia)
+                        if tab is not None:
+                            uia._click_ctrl(tab)
+                            time.sleep(0.8)
+            except Exception:
+                pass
+        except Exception as exc:
+            log.debug("整理微信聊天窗口失败：%s", exc)
+
     def _open_chat(self, chat: str) -> bool:
-        if not self._uia:
+        uia = self._uia
+        if not uia:
             return False
         aliases = self._chat_aliases.get(chat) or [chat]
+        self._prepare_chat_window(uia)
         try:
-            for attempt in range(2):
-                if not self._uia.ensure_window():
+            for attempt in range(3):
+                if not uia.ensure_window():
                     time.sleep(0.5)
                     continue
-                current = self._uia.current_chat()
+                current = uia.current_chat()
                 if current and current in aliases:
                     return True
                 # Try the configured name first, then the local remark/nickname.
                 for alias in aliases:
                     try:
-                        ok = bool(self._uia.open_chat(alias, retries=3))
+                        ok = bool(uia.open_chat(alias, retries=3))
                     except Exception as exc:
                         log.warning("wechatauto 搜索会话 %s 失败：%s", alias, exc)
                         ok = False
-                    current = self._uia.current_chat()
+                    current = uia.current_chat()
                     if ok or (current and current in aliases):
                         log.info("wechatauto 已打开会话：%s -> %r", chat, current or alias)
                         return True
                 # A narrow window can keep the previous conversation open;
                 # materialize and retry once before reporting an error.
                 try:
-                    self._uia.ensure_materialized(timeout=5)
+                    uia.ensure_materialized(timeout=5)
+                    self._prepare_chat_window(uia)
                 except Exception:
                     pass
                 time.sleep(0.4)
+            try:
+                current = uia.current_chat()
+            except Exception:
+                current = None
             log.warning("wechatauto 打开会话失败：目标=%s 当前=%r 候选=%s",
-                        chat, self._uia.current_chat(), aliases)
+                        chat, current, aliases)
             return False
         except Exception as exc:
             log.warning("wechatauto 打开会话失败：%s", exc)
@@ -780,13 +854,14 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
 
     def stop(self) -> None:
         self._running = False
+        with self._ui_lock:
+            self._uia = None
         if self._listener:
             try:
                 self._listener.stop()
             except Exception as exc:
                 log.debug("停止 wechatauto listener 失败：%s", exc)
             self._listener = None
-        self._uia = None
         self._db = None
         self._media = None
         self.connected = False
