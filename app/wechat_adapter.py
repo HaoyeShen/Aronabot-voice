@@ -129,16 +129,18 @@ class BaseWeChatAdapter:
     def send_text(self, chat: str, text: str) -> SendResult:
         raise NotImplementedError
 
-    def send_quoted_text(self, chat: str, text: str, quote_text: str = "") -> SendResult:
+    def send_quoted_text(self, chat: str, text: str, quote_text: str = "",
+                         quote_kind: str = "text") -> SendResult:
         """Adapters without native quote support fall back to a normal text."""
         return self.send_text(chat, text)
 
     def ensure_chat_open(self, chat: str) -> bool:
         return False
 
-    def _right_click_quote_message(self, chat: str, quote_text: str) -> bool:
+    def _right_click_quote_message(self, chat: str, quote_text: str,
+                                   quote_kind: str = "text") -> bool:
         """Right-click the specific incoming bubble that ARONA is answering."""
-        if not quote_text.strip():
+        if not quote_text.strip() and quote_kind not in ("image", "voice"):
             return False
         uia = self._uia
         if uia is None:
@@ -152,11 +154,14 @@ class BaseWeChatAdapter:
             needle = re.sub(r"\s+", "", value)[:40]
             if needle and needle not in candidates:
                 candidates.append(needle)
-        if not candidates:
+        if not candidates and quote_kind not in ("image", "voice"):
             return False
 
         def predicate(class_name: str, name: str) -> bool:
             normalized = re.sub(r"\s+", "", name or "")
+            if quote_kind in ("image", "voice"):
+                marker = "ChatImageItemView" if quote_kind == "image" else "ChatVoiceItemView"
+                return marker in class_name and not normalized.startswith("引用")
             return (any(needle in normalized for needle in candidates) and
                     not normalized.startswith("引用") and
                     "ChatTextItemView" in class_name)
@@ -165,8 +170,15 @@ class BaseWeChatAdapter:
         if not found:
             return False
         _class_name, _name, rect = found
-        cx = max(rect.left + 8, min(rect.right - 8,
-                                    (rect.left + rect.right) // 2))
+        # The row rectangle spans the whole chat width; its geometric center
+        # is empty space for a left-aligned incoming bubble.  Find the
+        # non-background content column as the upstream latest-row helper does.
+        # This method is only used for the incoming message being answered,
+        # which is left-aligned in WeChat.  Clicking the left content area is
+        # more reliable than the row centre (which is empty background).
+        width = rect.right - rect.left
+        cx = rect.left + min(120, max(36, width // 5))
+        cx = max(rect.left + 8, min(rect.right - 8, cx))
         cy = max(rect.top + 8, min(rect.bottom - 8,
                                    (rect.top + rect.bottom) // 2))
         uia._set_cursor(cx, cy)
@@ -175,7 +187,8 @@ class BaseWeChatAdapter:
         time.sleep(0.8)
         return True
 
-    def send_quoted_text(self, chat: str, text: str, quote_text: str = "") -> SendResult:
+    def send_quoted_text(self, chat: str, text: str, quote_text: str = "",
+                         quote_kind: str = "text") -> SendResult:
         if not text.strip():
             return SendResult(False, "消息内容为空")
         username = self._usernames.get(chat, "")
@@ -186,7 +199,7 @@ class BaseWeChatAdapter:
             try:
                 menu = None
                 for _attempt in range(3):
-                    if not self._right_click_quote_message(chat, quote_text):
+                    if not self._right_click_quote_message(chat, quote_text, quote_kind):
                         return SendResult(False, "引用失败：没有定位到被回复的消息")
                     # The popup can disappear while the UIA tree is traversed;
                     # re-open it if necessary and scan immediately.
