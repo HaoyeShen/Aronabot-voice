@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wecvoice-auto"
+version = "0.0.2"
+description = "Send real WeChat voice messages on Windows with free Edge TTS and switchable voices."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "WecVoice-auto contributors" }]
+keywords = ["wechat", "voice", "tts", "edge-tts", "automation", "windows", "arona"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Win32 (MS Windows)",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Natural Language :: Chinese (Simplified)",
+  "Operating System :: Microsoft :: Windows :: Windows 10",
+  "Operating System :: Microsoft :: Windows :: Windows 11",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+  "edge-tts>=6.1.12,<8",
+  "miniaudio>=1.59",
+  "sounddevice>=0.4.6",
+  "numpy>=1.24",
+  "comtypes>=1.2",
+  "pycaw>=20230407; sys_platform == 'win32'",
+  "uiautomation>=2.0.18; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "build>=1.0"]
+
+[project.scripts]
+wecvoice = "wecvoice_auto.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/HaoyeShen/WecVoice-auto"
+Repository = "https://github.com/HaoyeShen/WecVoice-auto"
+Issues = "https://github.com/HaoyeShen/WecVoice-auto/issues"
+Changelog = "https://github.com/HaoyeShen/WecVoice-auto/blob/main/CHANGELOG.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+filterwarnings = ["ignore::DeprecationWarning"]

@@ -40,7 +40,7 @@ DEFAULT_CONFIG = {
     ],
     "targets": [],
     "admin": {
-        "password": "arona-admin",
+        "password": "",
         "allowed": ["__self__"],
         "off_seconds": 3600,
     },
@@ -77,6 +77,9 @@ DEFAULT_CONFIG = {
         "voice_probability": 0.5,
         "voice_name": "arona",
         "voice_max_chars": 30,
+        "natural_voice": True,
+        "read_links": True,
+        "trigger_semantic_check": True,
         "replace_punctuation": False,
         "trigger_enabled": True,
         "trigger_keywords": ["阿洛娜", "Arona", "ARONA"],

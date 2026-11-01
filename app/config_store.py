@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import secrets
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -94,7 +95,7 @@ class ConfigStore:
             if not isinstance(data.get(section), dict):
                 data[section] = copy.deepcopy(DEFAULT_CONFIG[section])
         admin = data.setdefault("admin", {})
-        admin["password"] = str(admin.get("password") or "arona-admin")
+        admin["password"] = str(admin.get("password") or secrets.token_urlsafe(12))
         allowed = admin.get("allowed")
         if isinstance(allowed, str):
             allowed = [line.strip() for line in allowed.splitlines() if line.strip()]

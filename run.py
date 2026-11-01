@@ -18,7 +18,7 @@ import tempfile
 import traceback
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -133,7 +133,7 @@ def run_ui_smoke(timeout_ms: int = 1800) -> int:
     memory = MemoryStore()
     service = BotService(config, personas, stickers, memory)
     import tkinter as tk
-    from app.ui.main_window import MainWindow
+    from app.ui.main_window import MainWindow, PAGE_CLASSES
 
     root = tk.Tk()
     root._arona_no_autostart = True
@@ -146,9 +146,11 @@ def run_ui_smoke(timeout_ms: int = 1800) -> int:
         try:
             pages_now = list(app.pages.keys())
             state = service.state()
+            if not app.bank.photo('assets/avatar_96.png', (32, 32)):
+                raise RuntimeError('Bundled avatar resource is missing')
             print(f"UI smoke: window={root.winfo_width()}x{root.winfo_height()} "
                   f"page={app._current_page} pages={pages_now} targets={state['target_count']}")
-            for key in pages_now:
+            for key in PAGE_CLASSES:
                 app.show_page(key)
                 root.update_idletasks()
             print("UI smoke: all pages rendered")

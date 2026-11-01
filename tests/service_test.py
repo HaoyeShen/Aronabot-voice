@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import time
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 import app.service as service_module
 from app.config_store import ConfigStore, PersonaStore, StickerStore
 from app.memory import MemoryStore
+from app.model_client import LLMResult
 from app.service import BotService
 from app.training import TrainingStore
 from app.wechat_adapter import BaseWeChatAdapter, IncomingMessage, SendResult
@@ -190,6 +192,65 @@ def main() -> int:
             ))
             time.sleep(0.4)
             assert len(adapter.sent) == 5, "@ must always get a reply"
+
+            # Exercise the real generation and send path with unusable model output.
+            config.bot.update({"auto_sticker": False, "voice_enabled": False,
+                               "quote_reply": False, "max_reply_chars": 23})
+            incoming = IncomingMessage(chat="测试群", sender="群友", content="@阿洛娜 帮帮我",
+                                       msg_type="text", chat_type="group")
+            class Client:
+                def __init__(self, replies):
+                    self.replies = iter(replies)
+
+                def chat(self, *args):
+                    value = next(self.replies)
+                    if isinstance(value, Exception):
+                        raise value
+                    return LLMResult(value, "test", "mock", 1)
+
+            def check_reply(replies, expected):
+                before = len(adapter.sent)
+                with patch.object(service_module, "make_client", return_value=Client(replies)):
+                    service._generate_and_send(incoming, group_target, 1, "帮帮我", force_reply=True)
+                assert [text for _, text in adapter.sent[before:]] == expected
+
+            long_sentence = "这是一句没有合适断句位置而且长度明显超过限制的回答需要完整处理"
+            check_reply([long_sentence, RuntimeError("rewrite failed")], ["抱歉，我现在答不上来。"])
+            check_reply([long_sentence, ""], ["抱歉，我现在答不上来。"])
+            check_reply(["第一句话是完整的。第二句话也是完整的。第三句话也完整。", ""],
+                        ["第一句话是完整的。", "第二句话也是完整的。", "第三句话也完整。"])
+            check_reply([RuntimeError("model failed")], ["抱歉，我现在答不上来。"])
+            check_reply(["", ""], ["抱歉，我现在答不上来。"])
+
+            # A rejected keyword mention must not fall through to 100% probability.
+            config.bot.update(trigger_enabled=True, trigger_semantic_check=True,
+                              group_reply_probability=1.0)
+            group_target['group_reply_probability'] = 1.0
+            before = len(adapter.sent)
+            with patch.object(service, '_keyword_addressed', return_value=False):
+                service._handle_incoming(IncomingMessage(
+                    chat='测试群', sender='群友', content='阿洛娜好可爱', chat_type='group',
+                    external_id='keyword-third-person'))
+            assert len(adapter.sent) == before
+            memory.add_user('测试群', 'https://example.com/article', sender='群友')
+            with patch.object(service_module, 'read_card', return_value='网页资料') as read:
+                incoming.content = '阿洛娜看看这个'
+                enriched = service._shared_content(incoming, incoming.content)
+                assert '网页资料' in enriched
+                assert read.call_args.args[0].url == 'https://example.com/article'
+            # A semantic decision may accept a call that the old regex misses.
+            profile = {**config.active_profile(), 'provider': 'openai'}
+            with patch.object(config, 'active_profile', return_value=profile):
+                with patch.object(service_module, 'make_client', return_value=Client(['YES'])):
+                    assert service._keyword_addressed(incoming, ['阿洛娜'])
+                with patch.object(service_module, 'make_client', return_value=Client(['NO'])):
+                    assert not service._keyword_addressed(incoming, ['阿洛娜'])
+
+            # Display punctuation replacement must not strip speech punctuation.
+            config.bot.update(voice_enabled=True, voice_probability=1.0, replace_punctuation=True)
+            with patch.object(service, '_send_voice_reply', return_value=True) as voice:
+                check_reply(['我在呢，别着急。'], [])
+                assert voice.call_args.args[1] == '我在呢，别着急。'
         finally:
             service.stop()
             service.memory.close()

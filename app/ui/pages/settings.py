@@ -171,7 +171,7 @@ class SettingsPage(BasePage):
         )
         self.admin_password = LabeledEntry(
             admin_card.body, "管理员密码",
-            str(self.config.data.get("admin", {}).get("password", "arona-admin")),
+            str(self.config.data.get("admin", {}).get("password", "")),
             hint="发送 /admin 后输入", width=24,
         )
         self.admin_password.pack(fill="x", pady=(0, px(6)))

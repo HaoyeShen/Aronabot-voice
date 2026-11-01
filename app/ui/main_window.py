@@ -14,6 +14,7 @@ from ..paths import ASSETS
 from ..service import BotService
 from .dialogs import DiagnosticsDialog, ReplyDetailDialog
 from .pages.dashboard import DashboardPage
+from .pages.home import HomePage
 from .pages.debug import DebugPage
 from .pages.listen_reply import ListenReplyPage
 from .pages.logs import LogsPage
@@ -24,11 +25,13 @@ from .pages.settings import SettingsPage
 from .pages.stickers import StickersPage
 from .pages.targets import TargetsPage
 from .pages.training import TrainingPage
-from .shell import NAV_ITEMS, Sidebar, TopBar
-from .theme import C, init_scale, px
+from .shell import NAV_ITEMS
+from .chrome import TopBar
+from .theme import C, init_scale, px, font, display_font
 from .widgets import ConfirmDialog, ImageBank, ToastManager, confirm, info, setup_ttk
 
 PAGE_CLASSES = {
+    "home": HomePage,
     "dashboard": DashboardPage,
     "debug": DebugPage,
     "monitor": MonitorPage,
@@ -158,23 +161,27 @@ class MainWindow:
     def _build(self) -> None:
         shell = tk.Frame(self.root, bg=C["bg"])
         shell.pack(fill="both", expand=True)
-        shell.grid_columnconfigure(1, weight=1)
+        shell.grid_columnconfigure(0, weight=1)
         shell.grid_rowconfigure(0, weight=1)
-        self.sidebar = Sidebar(shell, self, self.show_page)
-        self.sidebar.grid(row=0, column=0, sticky="nsw")
         self.main = tk.Frame(shell, bg=C["bg"])
-        self.main.grid(row=0, column=1, sticky="nsew")
+        self.main.grid(row=0, column=0, sticky="nsew")
         self.main.grid_rowconfigure(1, weight=1)
         self.main.grid_columnconfigure(0, weight=1)
         self.topbar = TopBar(self.main, self)
-        self.topbar.grid(row=0, column=0, sticky="ew", padx=px(24))
+        self.topbar.grid(row=0, column=0, sticky="ew")
         self.host = tk.Frame(self.main, bg=C["bg"])
-        self.host.grid(row=1, column=0, sticky="nsew", padx=px(24), pady=(0, px(18)))
+        self.host.grid(row=1, column=0, sticky="nsew")
         self.host.grid_rowconfigure(0, weight=1)
         self.host.grid_columnconfigure(0, weight=1)
-        self.sidebar.update_state(self.service.state())
+        footer = tk.Frame(self.main, bg=C['bg_deep'], height=px(25))
+        footer.grid(row=2, column=0, sticky='ew')
+        footer.pack_propagate(False)
+        tk.Label(footer, text='ARONA   什亭之匣微信助手', bg=C['bg_deep'], fg=C['text_soft'],
+                 font=font(7)).pack(side='left', padx=px(22))
+        tk.Label(footer, text=f'v{__version__}  ✦', bg=C['bg_deep'], fg=C['text_soft'],
+                 font=display_font(7)).pack(side='right', padx=px(22))
         self.topbar.update_state(self.service.state())
-        self.show_page(self.config.ui.get("start_page", "dashboard"))
+        self.show_page("home")
 
     def _startup(self) -> None:
         self.refresh_header()
@@ -207,6 +214,9 @@ class MainWindow:
         if key not in PAGE_CLASSES:
             key = "dashboard"
         if self._current_page and self._current_page in self.pages:
+            old_page = self.pages[self._current_page]
+            if hasattr(old_page, 'on_hide'):
+                old_page.on_hide()
             self.pages[self._current_page].pack_forget()
         page = self.pages.get(key)
         if page is None:
@@ -215,7 +225,8 @@ class MainWindow:
         page.pack(fill="both", expand=True)
         page.on_show()
         self._current_page = key
-        self.sidebar.set_active(key)
+        self.host.grid_configure(padx=0 if key == 'home' else px(22), pady=(0, 0 if key == 'home' else px(18)))
+        self.topbar.set_active(key)
         self.topbar.set_page(page.title, page.subtitle, PAGE_CODES.get(key, key.upper()))
         self.refresh_header()
 
@@ -223,7 +234,6 @@ class MainWindow:
         try:
             state = self.service.state()
             self.topbar.update_state(state)
-            self.sidebar.update_state(state)
             if not self._bot_action_busy and not state.get("starting"):
                 self.topbar.action.set_busy(False)
         except tk.TclError:

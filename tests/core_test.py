@@ -299,6 +299,10 @@ def test_model_clients() -> None:
 def test_config_crud() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = ConfigStore(Path(tmp) / "config.json")
+        password = config.data['admin']['password']
+        second = ConfigStore(Path(tmp) / 'second.json')
+        assert len(password) >= 12 and password != second.data['admin']['password']
+        assert ConfigStore(config.path).data['admin']['password'] == password
         target = config.add_target("文件传输助手", "friend", "arona")
         assert_true(config.target_by_name("文件传输助手")["id"] == target["id"], "add target")
         config.update_target(target["id"], {"enabled": False})

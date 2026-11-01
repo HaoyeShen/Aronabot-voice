@@ -30,8 +30,9 @@ class ImageBank:
               circular: bool = False):
         path = str(path)
         if not os.path.isabs(path):
-            from ..paths import ROOT
-            path = str(ROOT / path)
+            from ..paths import ROOT, BUNDLE
+            relative = Path(path)
+            path = str((BUNDLE if relative.parts and relative.parts[0] == 'assets' else ROOT) / relative)
         try:
             mtime = os.path.getmtime(path)
         except OSError:
@@ -141,8 +142,9 @@ class RoundedButton(tk.Canvas):
             fill = fill or self["bg"]
             line = style["line"]
             fg = style["fg"]
-        rounded_rect(self, 1, 1, w - 1, h - 1, self._radius, fill=fill,
-                     outline=line or fill, width=1)
+        skew = min(px(7), w / 10)
+        self.create_polygon(skew+1, 1, w-1, 1, w-skew-1, h-1, 1, h-1,
+                            fill=fill, outline=line or fill, width=1)
         # Signature Blue Archive corner notch / accent bar.
         if self._enabled and style.get("accent") and self._style["bg"] is not None:
             self.create_rectangle(w - px(18), 1, w - px(5), 3,

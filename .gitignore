@@ -21,3 +21,11 @@ data/images/
 data/admin_state.json
 
 data/news_state.json
+
+data/voice_presets.json
+release/
+build/
+dist/
+*.spec
+!ARONA.spec
+*.bak-*

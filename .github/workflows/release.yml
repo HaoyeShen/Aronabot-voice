@@ -1,0 +1,44 @@
+name: Windows release
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  build:
+    if: startsWith(github.event.head_commit.message, 'Release v')
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install runtime and build dependencies
+        run: |
+          python -m pip install -r requirements.txt -r requirements-wechatauto.txt
+          python -m pip install --no-deps wechatauto-replica==1.2.8.0
+          python -m pip install ./vendor/WecVoice-auto pyinstaller==6.22.3
+          python -c "import wechatauto.db, wechatauto.uia_driver, wecvoice_auto, sounddevice, miniaudio"
+      - name: Full regression suite
+        shell: pwsh
+        run: |
+          foreach ($test in @('core_test','training_test','service_test','wechatauto_adapter_test','news_test','link_voice_test','ui_test')) {
+            python "tests/$test.py"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Build and smoke clean Windows package
+        run: python scripts/build_release.py --windows
+      - name: Upload checked artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARONA-Voice-windows
+          path: release/*
+      - name: Publish v1.0.0
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = python -c "from app import __version__; print(__version__)"
+          gh release create "v$version" release/* --target $env:GITHUB_SHA --title "ARONA Voice v$version · 什亭之匣" --notes-file docs/release-v1.0.0.md --latest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

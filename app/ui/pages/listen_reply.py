@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import tkinter as tk
+import threading
 from datetime import datetime
+from tkinter import ttk
 
 from ...ui.theme import C, font, px
 from ...ui.widgets import (
+    BaseDialog,
     Card,
     LabeledEntry,
     RoundedButton,
@@ -16,6 +19,72 @@ from ...ui.widgets import (
     confirm,
 )
 from .base import BasePage
+
+
+class VoicePresetDialog(BaseDialog):
+    def __init__(self, parent, preset: dict, on_save) -> None:
+        super().__init__(parent, "编辑语音音色", "调整 Edge TTS 音色与参数",
+                         width=520, height=520, icon=getattr(parent, "icon", None))
+        self.preset = dict(preset)
+        self.on_save = on_save
+        body = tk.Frame(self.body, bg=C["card"])
+        body.pack(fill="both", expand=True, padx=px(22), pady=px(16))
+        self.label = LabeledEntry(body, "音色名称", preset.get("label", ""), width=28)
+        self.label.pack(fill="x", pady=(0, px(7)))
+        self.voice = LabeledEntry(
+            body, "Edge 音色 ID", preset.get("voice", "zh-CN-XiaoyiNeural"),
+            hint="例如 zh-CN-XiaoyiNeural", width=32,
+        )
+        self.voice.pack(fill="x", pady=(0, px(7)))
+        row = tk.Frame(body, bg=C["card"])
+        row.pack(fill="x", pady=(0, px(7)))
+        self.rate = LabeledEntry(row, "语速", preset.get("rate", "+0%"), width=8)
+        self.rate.pack(side="left", fill="x", expand=True, padx=(0, px(4)))
+        self.pitch = LabeledEntry(row, "音调", preset.get("pitch", "+0Hz"), width=8)
+        self.pitch.pack(side="left", fill="x", expand=True, padx=px(4))
+        self.volume = LabeledEntry(row, "音量", preset.get("volume", "+0%"), width=8)
+        self.volume.pack(side="left", fill="x", expand=True, padx=(px(4), 0))
+        self.description = LabeledEntry(
+            body, "说明（可选）", preset.get("description", ""), width=32,
+        )
+        self.description.pack(fill="x", pady=(0, px(6)))
+        self.error = tk.Label(body, text="", bg=C["card"], fg=C["red"], font=font(8),
+                              anchor="w")
+        self.error.pack(fill="x")
+        self.add_footer("取消", self.close, "secondary", 90)
+        self.add_footer("保存", self.save, "primary", 100)
+
+    def save(self) -> None:
+        label = self.label.get().strip()
+        voice = self.voice.get().strip()
+        if not label or not voice:
+            self.error.configure(text="音色名称和 Edge 音色 ID 不能为空。")
+            return
+        def signed(value: str, suffix: str) -> str:
+            value = (value or "").strip()
+            if not value:
+                return "+0" + suffix
+            if not value.startswith(("+", "-")):
+                value = "+" + value
+            return value if value.endswith(suffix) else value + suffix
+        preset = dict(self.preset)
+        preset.update({
+            "label": label,
+            "voice": voice,
+            "rate": signed(self.rate.get(), "%"),
+            "pitch": signed(self.pitch.get(), "Hz"),
+            "volume": signed(self.volume.get(), "%"),
+            "description": self.description.get().strip(),
+        })
+        try:
+            from wecvoice_auto.voices import resolve_voice
+            resolve_voice(preset["voice"], rate=preset["rate"],
+                          pitch=preset["pitch"], volume=preset["volume"])
+        except Exception as exc:
+            self.error.configure(text=f"参数格式不正确：{exc}")
+            return
+        self.on_save(preset)
+        self.close()
 
 
 class ListenReplyPage(BasePage):
@@ -165,6 +234,11 @@ class ListenReplyPage(BasePage):
             self.config.bot.get("voice_enabled", False),
         )
         self.voice_enabled.pack(fill="x", pady=px(4))
+        self.natural_voice = ToggleRow(
+            voice.body, "保留自然语音停顿", "语音保留句读，不受文字标点替换影响；关闭可恢复旧读法。",
+            self.config.bot.get("natural_voice", True),
+        )
+        self.natural_voice.pack(fill="x", pady=px(4))
         self.voice_probability = LabeledEntry(
             voice.body, "语音概率（%）",
             str(round(float(self.config.bot.get("voice_probability", 0.5)) * 100)),
@@ -177,9 +251,28 @@ class ListenReplyPage(BasePage):
             hint="默认 30", width=8,
         )
         self.voice_max_chars.pack(fill="x", pady=(px(3), px(3)))
+        preset_row = tk.Frame(voice.body, bg=C["card"])
+        preset_row.pack(fill="x", pady=(px(4), px(4)))
+        tk.Label(preset_row, text="音色", bg=C["card"], fg=C["text_soft"],
+                 font=font(8, "bold")).pack(side="left", padx=(0, px(5)))
+        self.voice_preset = ttk.Combobox(
+            preset_row, state="readonly", style="Arona.TCombobox", font=font(8),
+        )
+        self.voice_preset.pack(side="left", fill="x", expand=True)
+        self._refresh_voice_presets()
+        buttons = tk.Frame(voice.body, bg=C["card"])
+        buttons.pack(fill="x", pady=(px(2), px(4)))
+        RoundedButton(buttons, text="新增", command=self.add_voice,
+                      style="ghost", width=52, height=28, bg=C["card"], font_size=7).pack(side="left")
+        RoundedButton(buttons, text="编辑", command=self.edit_voice,
+                      style="ghost", width=52, height=28, bg=C["card"], font_size=7).pack(side="left", padx=px(4))
+        RoundedButton(buttons, text="删除", command=self.delete_voice,
+                      style="ghost", width=52, height=28, bg=C["card"], font_size=7).pack(side="left")
+        RoundedButton(buttons, text="试听「你好」", command=self.preview_voice,
+                      style="secondary", width=100, height=28, bg=C["card"], font_size=7).pack(side="right")
         tk.Label(
             voice.body,
-            text="需要 WecVoice-auto、VB-CABLE 虚拟声卡和微信语音权限；语音音色默认阿洛娜。",
+            text="需要 WecVoice-auto、VB-CABLE 虚拟声卡和微信语音权限；试听只在本机播放，不发送到微信。",
             bg=C["card"], fg=C["muted"], font=font(7), anchor="w",
             justify="left", wraplength=px(420),
         ).pack(fill="x")
@@ -191,10 +284,22 @@ class ListenReplyPage(BasePage):
         )
         self.trigger_enabled = ToggleRow(
             trigger.body, "启用名称/关键词触发",
-            "群聊消息里出现这些词时，即使没有 @ 也会回复。",
+            "出现关键词后判断是否在对阿洛娜说话，确认后才回复。",
             self.config.bot.get("trigger_enabled", True),
         )
         self.trigger_enabled.pack(fill="x", pady=px(4))
+        self.trigger_semantic = ToggleRow(
+            self.trigger_enabled.master, "结合上下文判断是否在叫阿洛娜",
+            "命中关键词后由当前模型判断；第三人称提及不回复，判断失败回退本地规则。",
+            self.config.bot.get("trigger_semantic_check", True),
+        )
+        self.trigger_semantic.pack(fill="x", pady=px(4))
+        self.read_links = ToggleRow(
+            self.trigger_enabled.master, "读取分享链接与视频号卡片",
+            "通过网络读取公开网页；视频号仅参考标题和封面，不在微信中打开。",
+            self.config.bot.get("read_links", True),
+        )
+        self.read_links.pack(fill="x", pady=px(4))
         tk.Label(
             trigger.body, text="关键词（每行一个，也可以逗号分隔）",
             bg=C["card"], fg=C["text_soft"], font=font(8, "bold"), anchor="w",
@@ -214,6 +319,77 @@ class ListenReplyPage(BasePage):
             trigger.body, text="例如“阿洛娜你好啊”会触发；清空则只认 @。",
             bg=C["card"], fg=C["muted"], font=font(7), anchor="w",
         ).pack(fill="x", pady=(px(4), 0))
+
+    def _selected_voice_preset(self) -> dict:
+        labels = list(self._voice_label_map)
+        label = self.voice_preset.get() if hasattr(self, "voice_preset") else ""
+        preset_id = self._voice_label_map.get(label, "arona")
+        return self.service.voice_presets.get(preset_id)
+
+    def _refresh_voice_presets(self, select_id: str = "") -> None:
+        presets = self.service.voice_presets.list()
+        self._voice_label_map = {item["label"]: item["id"] for item in presets}
+        self._voice_id_map = {item["id"]: item["label"] for item in presets}
+        self.voice_preset["values"] = list(self._voice_label_map)
+        target = select_id or str(self.config.bot.get("voice_name", "arona"))
+        self.voice_preset.set(self._voice_id_map.get(target, presets[0]["label"]))
+
+    def add_voice(self) -> None:
+        def saved(preset: dict) -> None:
+            result = self.service.voice_presets.upsert(preset)
+            self._refresh_voice_presets(result["id"])
+            self.app.toast("音色已新增。", "success")
+        VoicePresetDialog(self.winfo_toplevel(), {
+            "label": "自定义音色", "voice": "zh-CN-XiaoyiNeural",
+            "rate": "+0%", "pitch": "+0Hz", "volume": "+0%",
+        }, saved).show()
+
+    def edit_voice(self) -> None:
+        preset = self._selected_voice_preset()
+        def saved(value: dict) -> None:
+            result = self.service.voice_presets.upsert(value)
+            self._refresh_voice_presets(result["id"])
+            self.app.toast("音色已保存。", "success")
+        VoicePresetDialog(self.winfo_toplevel(), preset, saved).show()
+
+    def delete_voice(self) -> None:
+        preset = self._selected_voice_preset()
+        if preset.get("builtin"):
+            self.app.toast("阿洛娜和普拉娜是内置音色，不能删除。", "warn")
+            return
+        if not confirm(self.winfo_toplevel(), "删除音色",
+                       f"删除自定义音色「{preset.get('label')}」？",
+                       ok_text="删除", danger=True, icon=self.icon):
+            return
+        if self.service.voice_presets.delete(preset["id"]):
+            self._refresh_voice_presets("arona")
+            self.app.toast("音色已删除。", "success")
+
+    def preview_voice(self) -> None:
+        preset = self._selected_voice_preset()
+        self.app.toast("正在合成试听语音…", "info")
+        def worker() -> None:
+            try:
+                from wecvoice_auto import VoiceSender
+                sender = VoiceSender()
+                result = sender.send(
+                    "你好", preview=True,
+                    voice=preset.get("voice"),
+                    rate=preset.get("rate"),
+                    pitch=preset.get("pitch"),
+                    volume=preset.get("volume"),
+                )
+                if result.ok:
+                    self.after(0, lambda: self.app.toast("试听播放完成。", "success"))
+                else:
+                    reason = result.message
+                    self.after(0, lambda reason=reason: self.app.toast(
+                        "试听失败：" + reason, "warn"))
+            except Exception as exc:
+                message = str(exc)
+                self.after(0, lambda message=message: self.app.toast(
+                    "试听失败：" + message, "error"))
+        threading.Thread(target=worker, daemon=True).start()
 
     def save(self) -> None:
         try:
@@ -248,6 +424,12 @@ class ListenReplyPage(BasePage):
             "group_probability_reply": self.group_probability.get(),
             "group_reply_probability": probability / 100.0,
             "voice_enabled": self.voice_enabled.get(),
+            "natural_voice": self.natural_voice.get(),
+            "read_links": self.read_links.get(),
+            "trigger_semantic_check": self.trigger_semantic.get(),
+            "voice_name": self._voice_label_map.get(
+                self.voice_preset.get(), "arona"
+            ),
             "voice_probability": voice_probability / 100.0,
             "voice_max_chars": voice_max_chars,
             "stale_reply_minutes": stale,
