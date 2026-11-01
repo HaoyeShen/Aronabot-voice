@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tkinter as tk
 import threading
+import logging
 from datetime import datetime
 from tkinter import ttk
 
@@ -19,6 +20,8 @@ from ...ui.widgets import (
     confirm,
 )
 from .base import BasePage
+
+log = logging.getLogger(__name__)
 
 
 class VoicePresetDialog(BaseDialog):
@@ -94,6 +97,7 @@ class ListenReplyPage(BasePage):
 
     def __init__(self, parent, app) -> None:
         super().__init__(parent, app)
+        self._voice_test_busy = False
         self._build()
 
     def _build(self) -> None:
@@ -180,7 +184,7 @@ class ListenReplyPage(BasePage):
         self.group_at_self_name.pack(fill="x")
         self.group_probability = ToggleRow(
             group_frame, "群聊未 @ 概率回复",
-            "没被 @ 时按下面的概率决定是否回复；关闭后未 @ 一律不回复。",
+            "没被 @ 时，确认对阿洛娜或全群说话后按概率回复；对其他人说话不插话。",
             self.config.bot.get("group_probability_reply", True),
         )
         self.group_probability.pack(fill="x")
@@ -192,6 +196,15 @@ class ListenReplyPage(BasePage):
             hint="0–100", width=8,
         )
         self.group_probability_value.pack(fill="x")
+        self.followup_timeout = LabeledEntry(
+            group_frame, "@ 后续聊超时（分钟）",
+            str(self.config.bot.get("followup_timeout_minutes", 5)),
+            hint="默认 5，范围 1–1440", width=8,
+        )
+        self.followup_timeout.pack(fill="x", pady=(px(8), 0))
+        tk.Label(group_frame, text="@ 回复后，确认仍对她说话就继续回复，无需再次 @。\n连续 5 条非对她发言或超时后退出，各群独立。",
+                 bg=C["card"], fg=C["muted"], font=font(7), anchor="w",
+                 justify="left", wraplength=px(420)).pack(fill="x", pady=(px(4), 0))
 
         timing = Card(right, padding=16, accent=C["pink"])
         timing.pack(fill="x")
@@ -229,8 +242,8 @@ class ListenReplyPage(BasePage):
             fill="x", pady=(0, px(8))
         )
         self.voice_enabled = ToggleRow(
-            voice.body, "允许发送微信语音气泡",
-            "开启后按概率把文字回复改为语音；失败会保留文字发送。",
+            voice.body, "允许自动发送微信语音气泡",
+            "普通回复按概率选语音；明确要求声音时优先响应，失败回退文字。",
             self.config.bot.get("voice_enabled", False),
         )
         self.voice_enabled.pack(fill="x", pady=px(4))
@@ -277,6 +290,27 @@ class ListenReplyPage(BasePage):
             justify="left", wraplength=px(420),
         ).pack(fill="x")
 
+        tk.Label(voice.body, text="测试语音目标群聊（完整群名）", bg=C["card"],
+                 fg=C["text_soft"], font=font(8, "bold"), anchor="w").pack(
+                     fill="x", pady=(px(12), px(4)))
+        self.voice_test_chat = ttk.Combobox(
+            voice.body, style="Arona.TCombobox", font=font(8),
+        )
+        self.voice_test_chat.pack(fill="x")
+        self.voice_test_chat.set(self.config.bot.get("voice_test_chat", "test"))
+        self._refresh_voice_test_chats()
+        self.voice_test_btn = RoundedButton(
+            voice.body, text="发送测试语音气泡", command=self.send_test_voice,
+            style="secondary", width=178, height=32, bg=C["card"], font_size=8,
+        )
+        self.voice_test_btn.pack(anchor="w", pady=(px(7), px(4)))
+        self.voice_test_status = tk.Label(
+            voice.body, text="请先连接微信；使用当前音色发送「你好，语音测试。」，失败回退文字。",
+            bg=C["card"], fg=C["muted"], font=font(7), anchor="w",
+            justify="left", wraplength=px(420),
+        )
+        self.voice_test_status.pack(fill="x")
+
         trigger = Card(right, padding=16)
         trigger.pack(fill="x", pady=(px(12), 0))
         SectionHeading(trigger.body, "关键词触发", "没 @ 也可能是在叫她").pack(
@@ -284,13 +318,13 @@ class ListenReplyPage(BasePage):
         )
         self.trigger_enabled = ToggleRow(
             trigger.body, "启用名称/关键词触发",
-            "出现关键词后判断是否在对阿洛娜说话，确认后才回复。",
+            "对阿洛娜说话时直接触发；第三人称公开讨论按群聊概率参与。",
             self.config.bot.get("trigger_enabled", True),
         )
         self.trigger_enabled.pack(fill="x", pady=px(4))
         self.trigger_semantic = ToggleRow(
             self.trigger_enabled.master, "结合上下文判断是否在叫阿洛娜",
-            "命中关键词后由当前模型判断；第三人称提及不回复，判断失败回退本地规则。",
+            "区分直接呼叫与第三人称讨论；判断失败回退本地规则。",
             self.config.bot.get("trigger_semantic_check", True),
         )
         self.trigger_semantic.pack(fill="x", pady=px(4))
@@ -319,6 +353,55 @@ class ListenReplyPage(BasePage):
             trigger.body, text="例如“阿洛娜你好啊”会触发；清空则只认 @。",
             bg=C["card"], fg=C["muted"], font=font(7), anchor="w",
         ).pack(fill="x", pady=(px(4), 0))
+
+    def on_show(self) -> None:
+        self._refresh_voice_test_chats()
+
+    def _refresh_voice_test_chats(self) -> None:
+        names = ["test"] + [str(t["name"]) for t in self.config.data.get("targets", [])
+                            if t.get("type") == "group"]
+        self.voice_test_chat.configure(values=list(dict.fromkeys(names)))
+
+    def send_test_voice(self) -> None:
+        if self._voice_test_busy:
+            return
+        chat = self.voice_test_chat.get().strip()
+        if not chat:
+            self.app.toast("请填写测试群聊的完整名称。", "warn")
+            return
+        preset = self._selected_voice_preset()
+        self.config.bot["voice_test_chat"] = chat
+        try:
+            self.config.save()
+        except OSError as exc:
+            log.warning("保存测试语音目标失败：%s", exc)
+            self.app.toast("无法保存测试群聊，请检查配置文件权限。", "error")
+            return
+        self._voice_test_busy = True
+        self.voice_test_btn.set_busy(True, "正在发送…")
+        self.voice_test_status.configure(text=f"正在向「{chat}」发送测试语音，请勿切换微信会话。",
+                                         fg=C["cyan_deep"])
+
+        def worker() -> None:
+            try:
+                result = self.service.send_test_voice(chat, preset_id=preset["id"])
+            except Exception as exc:
+                log.warning("测试语音任务失败：%s", exc)
+                result = {"ok": False, "message": "测试语音发送失败，请查看运行日志。"}
+            # The existing main-thread event pump also works while this page is hidden.
+            self.service.emit("voice_test_done", result)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_event(self, kind: str, data: dict) -> None:
+        if kind != "voice_test_done":
+            return
+        self._voice_test_busy = False
+        self.voice_test_btn.set_busy(False, "发送测试语音气泡")
+        message = data.get("message") or "测试语音发送失败。"
+        self.voice_test_status.configure(text=message,
+                                         fg=C["green"] if data.get("ok") else C["red"])
+        self.app.toast(message, "success" if data.get("ok") else "warn")
 
     def _selected_voice_preset(self) -> dict:
         labels = list(self._voice_label_map)
@@ -394,6 +477,7 @@ class ListenReplyPage(BasePage):
     def save(self) -> None:
         try:
             stale = max(1, min(1440, int(self.stale_minutes.get() or 10)))
+            followup_timeout = max(1, min(1440, int(self.followup_timeout.get() or 5)))
             probability = max(0, min(100, int(float(
                 self.group_probability_value.get() or 30
             ))))
@@ -423,7 +507,9 @@ class ListenReplyPage(BasePage):
             "group_at_include_self_name": self.group_at_self_name.get(),
             "group_probability_reply": self.group_probability.get(),
             "group_reply_probability": probability / 100.0,
+            "followup_timeout_minutes": followup_timeout,
             "voice_enabled": self.voice_enabled.get(),
+            "voice_test_chat": self.voice_test_chat.get().strip() or "test",
             "natural_voice": self.natural_voice.get(),
             "read_links": self.read_links.get(),
             "trigger_semantic_check": self.trigger_semantic.get(),

@@ -10,9 +10,23 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.link_reader import extract_card, read_card, validate_url, PageText, fetch_public
 from app.voice_presets import VoicePresetStore
+from app.understanding import voice_reply_requested, voice_reply_forbidden
 
 
 def main():
+    for text in ('阿洛娜，喵一声', '阿洛娜喵一声', '用语音回复我', '请发一条语音',
+                 '说给我听', '帮我读一下这段话', 'wxid_member:\n阿洛娜，学猫叫',
+                 '请用语音说“你好”', '不用打字，喵一声', '想听你的声音', '我想听你的声音', '阿洛娜，笑一声'):
+        assert voice_reply_requested(text), text
+    for text in ('不要发语音', '阿洛娜，别喵一声', '不用语音，文字回复就好',
+                 '小明说“阿洛娜，喵一声”', '昨天我让阿洛娜喵一声',
+                 '语音回复是什么意思', '喵一声是什么意思', '我听说阿洛娜会喵一声',
+                 '我想发一条语音', '我刚才发一条语音', '我学猫叫',
+                 '阿洛娜好可爱', '<appmsg><title>阿洛娜喵一声</title></appmsg>'):
+        assert not voice_reply_requested(text), text
+    assert voice_reply_forbidden('不要发语音，只用文字回复')
+    assert not voice_reply_forbidden('小明说“不要发语音”')
+    assert not voice_reply_forbidden('我不想念他')
     class Response:
         headers = Message()
         headers['Content-Type'] = 'text/html; charset=utf-8'

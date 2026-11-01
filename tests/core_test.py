@@ -23,6 +23,7 @@ from app.prompting import (
     build_system_prompt,
     fix_self_reference,
     at_mentioned,
+    group_audience,
     reduce_ellipsis,
     parse_reply,
     resolve_sticker,
@@ -84,6 +85,22 @@ def test_prompt_and_stickers() -> None:
     assert_true("阿洛娜" in compact and stickers[0]["name"] in compact and "sticker:" in compact,
                 "compact persona + sticker prompt")
     assert_true(len(compact) < len(system), "compact prompt is shorter")
+    for prompt in (system, compact):
+        assert_true('【阿洛娜的知识表达】' in prompt,
+                    'knowledge guidance applies to both prompt paths')
+        assert_true('不编造数字' in prompt and '温柔、元气' in prompt,
+                    'knowledge preserves character and uncertainty')
+        assert_true('【日常建议与个人看法】' in prompt and '不代表在求建议' in prompt,
+                    'both prompt paths distinguish responding from invited advice')
+    plana = PersonaStore().get('plana')
+    assert_true('【阿洛娜的知识表达】' not in build_system_prompt(plana, []), 'other personas unchanged')
+    assert_true('【日常建议与个人看法】' not in build_compact_system_prompt(plana, []),
+                'Arona advice preference does not rewrite Plana')
+    for message, expected in [('wxid_member:\n大家早上好', 'ALL'), ('@所有人 开会啦', 'ALL'),
+                              ('@张三 你觉得阿洛娜怎么样', 'OTHER'), ('谁知道水为什么沸腾', 'ALL'),
+                              ('你吃饭了吗', 'UNKNOWN'), ('昨天他问大家去哪', 'UNKNOWN')]:
+        assert_true(group_audience(message, ['阿洛娜']) == expected, 'audience: ' + message)
+    assert_true(group_audience('阿洛娜好可爱', ['阿洛娜']) == 'ALL', 'public third-person discussion is eligible')
     assert_true("绝不能自称" in system and "自称只能用" in compact,
                 "self-reference rules present")
     group_system = build_system_prompt(persona, stickers, target_name="测试群",
@@ -304,6 +321,14 @@ def test_config_crud() -> None:
         second = ConfigStore(Path(tmp) / 'second.json')
         assert len(password) >= 12 and password != second.data['admin']['password']
         assert ConfigStore(config.path).data['admin']['password'] == password
+        legacy_path = Path(tmp) / 'legacy.json'
+        legacy_path.write_text(json.dumps({'bot': {'auto_reply': False}}), encoding='utf-8')
+        legacy = ConfigStore(legacy_path)
+        assert legacy.bot['followup_timeout_minutes'] == 5 and not legacy.bot['auto_reply']
+        for value, expected in [(None, 5), ('invalid', 5), (0, 1), (9999, 1440), (7, 7)]:
+            legacy.bot['followup_timeout_minutes'] = value
+            legacy.save()
+            assert ConfigStore(legacy_path).bot['followup_timeout_minutes'] == expected
         target = config.add_target("文件传输助手", "friend", "arona")
         assert_true(config.target_by_name("文件传输助手")["id"] == target["id"], "add target")
         config.update_target(target["id"], {"enabled": False})

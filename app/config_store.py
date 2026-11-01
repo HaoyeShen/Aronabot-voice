@@ -113,6 +113,7 @@ class ConfigStore:
         except (TypeError, ValueError):
             news["send_time"] = "06:50"
         news["target_chat"] = str(news.get("target_chat") or "").strip()
+        news["test_chat"] = str(news.get("test_chat") or "test").strip() or "test"
         try:
             news["max_items"] = max(1, min(3, int(news.get("max_items", 2) or 2)))
         except (TypeError, ValueError):
@@ -122,6 +123,10 @@ class ConfigStore:
         except (TypeError, ValueError):
             news["timeout"] = 10
         news["use_model_summary"] = bool(news.get("use_model_summary", True))
+        try:
+            news["max_age_hours"] = max(1, min(168, int(news.get("max_age_hours", 24))))
+        except (TypeError, ValueError):
+            news["max_age_hours"] = 24
         try:
             admin["off_seconds"] = max(10, min(86400, int(admin.get("off_seconds", 3600))))
         except (TypeError, ValueError):
@@ -137,6 +142,10 @@ class ConfigStore:
         bot["group_reply_probability"] = max(0.0, min(1.0, group_probability))
         bot["group_at_include_self_name"] = bool(bot.get("group_at_include_self_name", True))
         try:
+            bot["followup_timeout_minutes"] = max(1, min(1440, int(bot.get("followup_timeout_minutes", 5))))
+        except (TypeError, ValueError):
+            bot["followup_timeout_minutes"] = 5
+        try:
             bot["stale_reply_minutes"] = max(1, min(1440, int(bot.get("stale_reply_minutes", 10))))
         except (TypeError, ValueError):
             bot["stale_reply_minutes"] = 10
@@ -147,6 +156,7 @@ class ConfigStore:
         except (TypeError, ValueError):
             bot["voice_probability"] = 0.5
         bot["voice_name"] = str(bot.get("voice_name") or "arona")
+        bot["voice_test_chat"] = str(bot.get("voice_test_chat") or "test").strip() or "test"
         try:
             bot["voice_max_chars"] = max(8, min(60, int(bot.get("voice_max_chars", 30))))
         except (TypeError, ValueError):

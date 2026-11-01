@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import logging
 import sys
 import tempfile
+import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -19,8 +22,10 @@ from app.wechat_adapter import WeChatAutoAdapter, IncomingMessage
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', choices=['link', 'preview', 'voice', 'semantic'])
+    parser.add_argument('mode', choices=['link', 'preview', 'voice', 'requested-voice', 'alias-identity', 'semantic', 'quote', 'news-test'])
     parser.add_argument('--no-send', action='store_true')
+    parser.add_argument('--chat-name', help='Read-only alias identity check: original group name')
+    parser.add_argument('--remark', help='Read-only alias identity check: group remark')
     args = parser.parse_args()
     handler = logging.StreamHandler()
     logger = logging.getLogger('app.service')
@@ -28,6 +33,26 @@ def main():
     logger.setLevel(logging.INFO)
     logger.propagate = False
     config = ConfigStore()
+    if args.mode == 'alias-identity':
+        # Read-only identity check for the pair explicitly named by the user.
+        # No UIA initialization, navigation, recording or sending.
+        from wechatauto import WeChatDB
+        adapter = WeChatAutoAdapter(dict(config.wechat), lambda _: None)
+        adapter._db = WeChatDB()
+        original, remark = args.chat_name, args.remark
+        if not original or not remark:
+            parser.error('alias-identity requires --chat-name and --remark')
+        left, right = adapter._resolve_username(original), adapter._resolve_username(remark)
+        print('ORIGINAL_NAME_RESOLVED', bool(left))
+        print('REMARK_RESOLVED', bool(right))
+        assert left and right and left == right, 'names did not uniquely resolve to the same identity'
+        adapter._usernames[original] = left
+        adapter._targets_by_user[left] = {'name': original}
+        assert adapter.is_same_chat(remark, original)
+        assert adapter.canonical_chat(remark) == original
+        print('SAME_CHAT_ID_VERIFIED', True)
+        print('CANONICAL_CONTEXT_NAME_VERIFIED', True)
+        return 0
     if args.mode == 'semantic':
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -76,10 +101,116 @@ def main():
             service._adapter = adapter
             service._running = True
             try:
+                if args.mode == 'news-test':
+                    from app.news import NewsService
+                    service.news = NewsService(local, PersonaStore(), state_path=base / 'news.json')
+                    # Track both actual local production state and isolated state.
+                    from app.news import NEWS_STATE_FILE
+                    before = NEWS_STATE_FILE.read_bytes() if NEWS_STATE_FILE.exists() else None
+                    result = service.send_test_news('test')
+                    after = NEWS_STATE_FILE.read_bytes() if NEWS_STATE_FILE.exists() else None
+                    assert before == after and not service.news.state_path.exists()
+                    print('NEWS_TEST_RESULT', result['ok'], result.get('no_new_items'))
+                    print('PRODUCTION_NEWS_STATE_UNCHANGED', True)
+                    return 0 if result['ok'] else 1
+                if args.mode == 'requested-voice':
+                    local.bot.update(voice_enabled=False, voice_probability=0)
+                    user = next(iter(adapter.target_usernames()))
+                    before = adapter._last_seq(user)
+                    request = IncomingMessage('test', '调试', '阿洛娜，喵一声', chat_type='group')
+                    row_id = memory.add_user('test', request.content, sender=request.sender)
+                    service._generate_and_send(
+                        request, {'name': 'test', 'type': 'group', 'persona_id': 'arona'},
+                        row_id, request.content, force_reply=True)
+                    events = []
+                    while not service.events.empty():
+                        kind, data = service.events.get_nowait()
+                        if kind == 'reply':
+                            events.append(data)
+                    voice = bool(events and events[-1].get('voice'))
+                    print('REQUESTED_VOICE_REPLY', voice)
+                    if not voice:
+                        return 1
+                    for _ in range(12):
+                        rows = adapter._db.get_messages(user, limit=6)
+                        if any(int(row.get('sort_seq', 0)) > before
+                               and str(row.get('sender_username') or '') == adapter.self_wxid
+                               and adapter._message_type_name(row.get('type')) == 'voice' for row in rows):
+                            print('NATIVE_VOICE_BUBBLE_DB_CONFIRMED', True)
+                            return 0
+                        time.sleep(.5)
+                    print('VOICE_SENT_BUT_DB_NOT_CONFIRMED')
+                    return 1
+                if args.mode == 'quote':
+                    user = next(iter(adapter.target_usernames()))
+                    rows = adapter._db.get_messages(user, limit=30)
+                    target = next((row for row in rows
+                                   if str(row.get('sender_username') or '') != adapter.self_wxid
+                                   and adapter._message_type_name(row.get('type')) == 'text'
+                                   and str(row.get('content') or '').strip()), None)
+                    if target is None:
+                        print('QUOTE_TEST: no incoming text in test; cancelled')
+                        return 2
+                    content = str(target['content'])
+                    body = re.sub(r'^\s*(?:wxid_[^\s:]+|[^\s:]+@chatroom):\r?\n', '', content)
+                    target_row = adapter._db.get_message_row(user, int(target['local_id']),
+                                                             shard=target.get('shard'))
+                    target_server_id = str((target_row or {}).get('server_id') or '')
+                    print('QUOTE_TARGET_IS_LATEST', target == rows[0])
+                    if args.no_send:
+                        uia = adapter._uia
+                        lst = uia._message_list()
+                        needle = re.sub(r'\s+', '', content)[:40]
+                        cleaned = re.sub(r'^\s*@\S+\s*', '', body)
+                        cleaned = re.sub(r'^\s*\[[^\]]+\]\s*', '', cleaned)
+                        clean_needle = re.sub(r'\s+', '', cleaned)[:40]
+                        print('QUOTE_TARGET_METADATA', json.dumps({
+                            'chars': len(content), 'clean_chars': len(cleaned),
+                            'requested_phrase': '引用这条最新消息' in content,
+                            'starts_xml': content.lstrip().startswith('<'),
+                            'sender_prefix': bool(re.match(r'^wxid_[^:]+:', content)),
+                        }))
+                        summary = []
+                        for child in lst.GetChildren() if lst else []:
+                            name = re.sub(r'\s+', '', child.Name or '')
+                            r = child.BoundingRectangle
+                            summary.append({'class': child.ClassName,
+                                            'name_chars': len(name), 'matches_target': needle in name,
+                                            'matches_cleaned': bool(clean_needle and clean_needle in name),
+                                            'requested_phrase': '引用这条最新消息' in name,
+                                            'rect': [r.left, r.top, r.right, r.bottom]})
+                        print('QUOTE_VIEW_DIAGNOSTIC', json.dumps(summary, ensure_ascii=False))
+                        return 0
+                    before = adapter._last_seq(user)
+                    result = adapter.send_quoted_text('test', '引用定位测试，收到啦。', content)
+                    if not result.ok:
+                        print('QUOTE_TEST_FAILED', result.message)
+                        return 1
+                    # Validate the sent quote against local DB XML, not just UI success.
+                    for _ in range(12):
+                        for row in adapter._db.get_messages(user, limit=10):
+                            if (int(row.get('sort_seq', 0)) <= before or
+                                    str(row.get('sender_username') or '') != adapter.self_wxid):
+                                continue
+                            try:
+                                xml = ET.fromstring(str(row.get('content') or ''))
+                            except ET.ParseError:
+                                continue
+                            ref = xml.findtext('.//refermsg/content', '')
+                            title = xml.findtext('.//appmsg/title', '')
+                            ref_server_id = xml.findtext('.//refermsg/svrid', '')
+                            content_matches = ref.strip() in (content.strip(), body.strip())
+                            id_matches = bool(target_server_id and ref_server_id == target_server_id)
+                            if title == '引用定位测试，收到啦。' and content_matches and id_matches:
+                                print('QUOTE_EXACT_TARGET_VERIFIED', True)
+                                return 0
+                        time.sleep(.5)
+                    print('QUOTE_SENT_BUT_DB_TARGET_NOT_VERIFIED')
+                    return 1
                 if args.mode == 'voice':
-                    ok = service._send_voice_reply('test', '你好，今天也请多关照。')
-                    print('TEST_VOICE_OK', ok)
-                    return 0 if ok else 1
+                    result = service.send_test_voice('test', preset_id=str(config.bot.get('voice_name', 'arona')))
+                    print('TEST_VOICE_RESULT', json.dumps(result, ensure_ascii=False))
+                    return 0 if result.get('ok') else 1
                 users = adapter.target_usernames()
                 user = next(iter(users))
                 selected = None
@@ -94,16 +225,16 @@ def main():
                     print('NO_RECENT_CARD: using public Edge TTS project page')
                 card = extract_card(selected.content)
                 print('SHARE_KIND', '视频号' if card.channels else '链接')
-                print('SHARE_TITLE', card.title[:120])
+                print('SHARE_TITLE_CHARS', len(card.title))
                 enriched = service._shared_content(selected, selected.content)
                 print('READ_OK', '网页可见文字：' in enriched or card.channels)
                 if args.no_send:
-                    print('READ_EXCERPT', enriched[:2200])
+                    print('READ_CONTENT_CHARS', len(enriched))
                     from app.model_client import make_client
                     result = make_client(config.active_profile()).chat(
                         [{'role': 'user', 'content': enriched[:7000]}],
                         '你是阿洛娜。对分享内容发表一句自然中文评论，整条必须不超过23字。只根据读到的文字，不假装看过视频。')
-                    print('MODEL_REPLY', result.text)
+                    print('MODEL_REPLY_GENERATED', bool(result.text.strip()))
                     return 0
                 row_id = memory.add_user('test', enriched, sender=selected.sender)
                 target = {'type': 'group', 'name': 'test', 'persona_id': 'arona', 'context_limit': 20}

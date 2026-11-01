@@ -137,6 +137,12 @@ class BaseWeChatAdapter:
     def ensure_chat_open(self, chat: str) -> bool:
         return False
 
+    def canonical_chat(self, chat: str) -> str:
+        return str(chat or "").strip()
+
+    def is_same_chat(self, current: str, expected: str) -> bool:
+        return bool(current and expected and current.strip() == expected.strip())
+
     def _right_click_quote_message(self, chat: str, quote_text: str,
                                    quote_kind: str = "text") -> bool:
         """Right-click the specific incoming bubble that ARONA is answering."""
@@ -145,12 +151,15 @@ class BaseWeChatAdapter:
         uia = self._uia
         if uia is None:
             return False
-        if uia.current_chat() != chat and not uia.open_chat(chat):
+        if not self.is_same_chat(uia.current_chat(), chat) and not self._open_chat(chat):
             return False
-        cleaned = re.sub(r"^\s*@\S+\s*", "", quote_text)
+        # Group DB bodies contain a transport sender header that the bubble's
+        # accessible Name omits.  Keep the original candidate as well.
+        body = re.sub(r"^\s*(?:wxid_[^\s:]+|[^\s:]+@chatroom):\r?\n", "", quote_text)
+        cleaned = re.sub(r"^\s*@\S+\s*", "", body)
         cleaned = re.sub(r"^\s*\[[^\]]+\]\s*", "", cleaned)
         candidates = []
-        for value in (quote_text, cleaned):
+        for value in (quote_text, body, cleaned):
             needle = re.sub(r"\s+", "", value)[:40]
             if needle and needle not in candidates:
                 candidates.append(needle)
@@ -162,11 +171,26 @@ class BaseWeChatAdapter:
             if quote_kind in ("image", "voice"):
                 marker = "ChatImageItemView" if quote_kind == "image" else "ChatVoiceItemView"
                 return marker in class_name and not normalized.startswith("引用")
+            # A real message may itself start with “引用”; only exclude a
+            # quoted preview when that prefix was not part of the target.
+            quote_preview = (normalized.startswith("引用") and
+                             not any(needle.startswith("引用") for needle in candidates))
             return (any(needle in normalized for needle in candidates) and
-                    not normalized.startswith("引用") and
+                    not quote_preview and
                     "ChatTextItemView" in class_name)
 
-        found = uia.find_in_message_list(predicate, max_scrolls=20)
+        # A newly received row can materialise a little after the DB event.
+        # Check the current viewport before any wheel movement; default lookup
+        # scans top-to-bottom and can prefer an older duplicate of the target.
+        found = None
+        for attempt in range(3):
+            found = uia.find_in_message_list(predicate, match_last=True, max_scrolls=0)
+            if found:
+                break
+            if attempt < 2:
+                time.sleep(0.25)
+        if not found:
+            found = uia.find_in_message_list(predicate, match_last=True, max_scrolls=20)
         if not found:
             return False
         _class_name, _name, rect = found
@@ -191,6 +215,7 @@ class BaseWeChatAdapter:
                          quote_kind: str = "text") -> SendResult:
         if not text.strip():
             return SendResult(False, "消息内容为空")
+        chat = self.canonical_chat(chat)
         username = self._usernames.get(chat, "")
         before = self._last_seq(username) if username else 0
         with self._ui_lock:
@@ -277,6 +302,7 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
         self._ui_lock = threading.RLock()
         self._targets_by_user: dict[str, dict] = {}
         self._usernames: dict[str, str] = {}
+        self._chat_aliases: dict[str, list[str]] = {}
         self.self_wxid = ""
 
     def _import_deps(self):
@@ -337,6 +363,20 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
             return "filehelper"
         if name.startswith("wxid_") or name.endswith("@chatroom"):
             return name
+        # Resolve all exact matches before using the upstream first-hit API.
+        # A generic remark shared by two contacts cannot identify a safe target.
+        try:
+            hits = self._db.search_contact(name)
+            matches = {str(hit.get("username")) for hit in hits if hit.get("username")
+                       and name in (hit.get("remark"), hit.get("nick_name"), hit.get("username"))}
+            if len(matches) > 1 or len(hits) >= 50:
+                log.warning("会话名称不唯一或搜索结果不完整，拒绝猜测：%s", name)
+                return None
+            if matches:
+                return next(iter(matches))
+        except Exception as exc:
+            log.debug("精确联系人解析失败：%s", exc)
+            return None
         for getter in (self._db.username_by_nickname,):
             try:
                 username = getter(name)
@@ -419,7 +459,7 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
                 failures.append(name)
                 continue
             self._usernames[name] = username
-            self._targets_by_user[username] = target
+            self._targets_by_user.setdefault(username, target)
             self._chat_aliases[name] = self._chat_names(name, username)
             log.info("wechatauto 已解析会话：%s -> %s", name, username)
         if failures:
@@ -432,7 +472,7 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
                 self._db, interval=interval, watermark_file=watermark,
                 persist_interval=1.0,
             )
-            for name, username in self._usernames.items():
+            for username in set(self._usernames.values()):
                 self._listener.add_listener(username, self._on_db_message)
             self._listener.start()
         except Exception as exc:
@@ -621,7 +661,7 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
             except Exception:
                 pass
             try:
-                for hit in self._db.search_contact(chat):
+                for hit in self._db.search_contact(username):
                     if str(hit.get("username") or "") != username:
                         continue
                     for key in ("remark", "nick_name"):
@@ -631,6 +671,19 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
             except Exception:
                 pass
         return list(dict.fromkeys(names))
+
+    def canonical_chat(self, chat: str) -> str:
+        chat = str(chat or "").strip()
+        username = self._usernames.get(chat) or self._resolve_username(chat)
+        target = self._targets_by_user.get(username) if username else None
+        return str(target["name"]) if target else chat
+
+    def is_same_chat(self, current: str, expected: str) -> bool:
+        if not current or not expected:
+            return False
+        expected_id = self._usernames.get(expected) or self._resolve_username(expected)
+        current_id = self._resolve_username(current)
+        return bool(expected_id and current_id and expected_id == current_id)
 
     def ensure_chat_open(self, chat: str) -> bool:
         with self._ui_lock:
@@ -707,7 +760,9 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
         uia = self._uia
         if not uia:
             return False
-        aliases = self._chat_aliases.get(chat) or [chat]
+        chat = self.canonical_chat(chat)
+        username = self._usernames.get(chat) or self._resolve_username(chat)
+        aliases = self._chat_names(chat, username) if username else [chat]
         self._prepare_chat_window(uia)
         try:
             for attempt in range(3):
@@ -715,7 +770,7 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
                     time.sleep(0.5)
                     continue
                 current = uia.current_chat()
-                if current and current in aliases:
+                if self.is_same_chat(current, chat):
                     return True
                 # Try the configured name first, then the local remark/nickname.
                 for alias in aliases:
@@ -725,7 +780,7 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
                         log.warning("wechatauto 搜索会话 %s 失败：%s", alias, exc)
                         ok = False
                     current = uia.current_chat()
-                    if ok or (current and current in aliases):
+                    if self.is_same_chat(current, chat):
                         log.info("wechatauto 已打开会话：%s -> %r", chat, current or alias)
                         return True
                 # A narrow window can keep the previous conversation open;
@@ -766,6 +821,7 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
     def send_text(self, chat: str, text: str) -> SendResult:
         if not text.strip():
             return SendResult(False, "消息内容为空")
+        chat = self.canonical_chat(chat)
         username = self._usernames.get(chat, "")
         before = self._last_seq(username) if username else 0
         with self._ui_lock:
@@ -786,6 +842,7 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
     def send_sticker(self, chat: str, path: Path) -> SendResult:
         if not Path(path).is_file():
             return SendResult(False, "表情包文件不存在", str(path))
+        chat = self.canonical_chat(chat)
         username = self._usernames.get(chat, "")
         before = self._last_seq(username) if username else 0
         with self._ui_lock:
@@ -812,6 +869,7 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
         return SendResult(True, "表情包已发送")
 
     def fetch_recent(self, chat: str, limit: int) -> list[HistoryMessage]:
+        chat = self.canonical_chat(chat)
         target = self._targets.get(chat, {})
         username = self._usernames.get(chat, "")
         if not username:

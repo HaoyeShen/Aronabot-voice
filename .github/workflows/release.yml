@@ -34,11 +34,11 @@ jobs:
         with:
           name: ARONA-Voice-windows
           path: release/*
-      - name: Publish v1.0.0
+      - name: Publish checked release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $version = python -c "from app import __version__; print(__version__)"
-          gh release create "v$version" release/* --target $env:GITHUB_SHA --title "ARONA Voice v$version · 什亭之匣" --notes-file docs/release-v1.0.0.md --latest
+          gh release create "v$version" release/* --target $env:GITHUB_SHA --title "ARONA Voice v$version · 什亭之匣" --notes-file "docs/release-v$version.md" --latest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sys
 import time
+from types import SimpleNamespace
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -173,6 +175,94 @@ def main() -> int:
     result2 = adapter.send_sticker("测试群", sticker)
     assert result2.ok, result2.message
     assert any("{Ctrl}v" in k for k in fake_uia.control.keys)
+
+    # Current viewport must be searched newest-first before scrolling history.
+    latest = ('mmui::ChatTextItemView', '@阿洛娜 最新消息',
+              SimpleNamespace(left=10, top=480, right=610, bottom=540))
+    older = ('mmui::ChatTextItemView', '旧问题',
+             SimpleNamespace(left=10, top=280, right=610, bottom=340))
+    clicked = []
+    calls = []
+    def find(predicate, match_last=False, max_scrolls=20):
+        calls.append((match_last, max_scrolls))
+        rows = [older, latest]
+        for row in reversed(rows) if match_last else rows:
+            if predicate(row[0], row[1]):
+                return row
+        return None
+    fake_uia.find_in_message_list = find
+    fake_uia._set_cursor = lambda x, y: clicked.append((x, y))
+    fake_uia._right_click = lambda: None
+    with patch('app.wechat_adapter.time.sleep'):
+        assert adapter._right_click_quote_message('测试群', '@阿洛娜 最新消息')
+        assert calls == [(True, 0)] and clicked[-1][1] == 510
+        assert adapter._right_click_quote_message('测试群', 'wxid_sender123:\n@阿洛娜 最新消息')
+        assert clicked[-1][1] == 510
+        assert adapter._right_click_quote_message('测试群', '旧问题')
+        assert clicked[-1][1] == 310  # never quote latest when target is older
+        with patch.object(fake_uia, 'find_in_message_list') as lookup:
+            def duplicate(predicate, match_last=False, **kwargs):
+                assert predicate(latest[0], latest[1])
+                return latest if match_last else (latest[0], latest[1], older[2])
+            lookup.side_effect = duplicate
+            assert adapter._right_click_quote_message('测试群', '最新消息')
+            assert clicked[-1][1] == 510  # duplicate text must prefer newest row
+        with patch.object(fake_uia, 'find_in_message_list', side_effect=[None, latest]) as lookup:
+            assert adapter._right_click_quote_message('测试群', '最新消息')
+            assert all(c.kwargs['max_scrolls'] == 0 for c in lookup.call_args_list)
+        before = len(clicked)
+        assert not adapter._right_click_quote_message('测试群', '不存在的具体消息')
+        assert len(clicked) == before and calls[-1] == (True, 20)
+        for kind, marker in [('image', 'ChatImageItemView'), ('voice', 'ChatVoiceItemView')]:
+            row = ('mmui::' + marker, '', latest[2])
+            def media(predicate, **kwargs):
+                return row if predicate(row[0], row[1]) else None
+            with patch.object(fake_uia, 'find_in_message_list', side_effect=media):
+                assert adapter._right_click_quote_message('测试群', '', kind)
+        def quote_word(predicate, **kwargs):
+            assert not predicate('mmui::ChatTextItemView', '引用其他人的旧消息 最新消息')
+            assert predicate('mmui::ChatTextItemView', '引用这条最新消息')
+            return ('mmui::ChatTextItemView', '引用这条最新消息', latest[2])
+        with patch.object(fake_uia, 'find_in_message_list', side_effect=quote_word):
+            assert adapter._right_click_quote_message('测试群', '引用这条最新消息')
+            assert adapter._right_click_quote_message('测试群', 'wxid_sender123:\r\n引用这条最新消息')
+    adapter.stop()
+    # Group name and remark resolve to one stable ID, subscription and context key.
+    class AliasDB(FakeDB):
+        contacts = [dict(username='room@chatroom', nick_name='原群名', remark='群聊')]
+        def search_contact(self, name):
+            return [dict(item) for item in self.contacts if any(name in str(v) for v in item.values())]
+        def get_nickname(self, username):
+            return '群聊' if username == 'room@chatroom' else super().get_nickname(username)
+    class AliasListener(FakeListener):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.added = []
+        def add_listener(self, user, callback):
+            self.added.append(user)
+            super().add_listener(user, callback)
+    alias_incoming = []
+    adapter = WeChatAutoAdapter({}, alias_incoming.append)
+    adapter._import_deps = lambda: (FakeWxParam, AliasDB, AliasListener, FakeUIA)
+    adapter.start([{'name': name, 'type': 'group', 'enabled': True} for name in ('原群名', '群聊')])
+    assert adapter._listener.added == ['room@chatroom']
+    assert adapter.is_same_chat('群聊', '原群名') and adapter.is_same_chat('原群名', '群聊')
+    assert adapter.canonical_chat('群聊') == '原群名'
+    assert set(adapter._chat_names('原群名', 'room@chatroom')) >= {'群聊', '原群名'}
+    adapter._uia._open = '群聊'
+    assert adapter.ensure_chat_open('原群名')
+    adapter._on_db_message({'username': 'room@chatroom', 'sender_username': 'wxid_friend',
+                            'content': '你好', 'type': '文本', 'local_id': 22})
+    assert alias_incoming[-1].chat == '原群名'
+    assert adapter.send_text('群聊', '别名文字测试').ok
+    assert adapter.fetch_recent('群聊', 3)[0].chat == '原群名'
+    adapter._db.contacts.append(dict(username='other@chatroom', nick_name='其他群', remark='群聊'))
+    assert not adapter.is_same_chat('群聊', '原群名'), 'ambiguous remark must not be trusted'
+    assert not adapter.is_same_chat('其他群', '原群名')
+    adapter._uia._open = '其他群'
+    adapter._uia.open_chat = lambda *args, **kwargs: True
+    with patch('app.wechat_adapter.time.sleep'):
+        assert not adapter.ensure_chat_open('原群名'), 'open_chat success alone cannot prove identity'
     adapter.stop()
     print("WECHATAUTO ADAPTER TEST PASSED", statuses[0][0])
     return 0

@@ -6,6 +6,8 @@ import sys
 import traceback
 import tempfile
 import time
+import threading
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,17 +92,24 @@ def main() -> int:
         while time.monotonic() < deadline:
             root.update()
             time.sleep(.02)
-        home.pet_head()
-        deadline = time.monotonic()+3.85
-        while time.monotonic() < deadline:
-            root.update()
-            time.sleep(.02)
-        assert home._closed, 'pet must keep the eye closed for four seconds'
-        deadline = time.monotonic()+.3
-        while time.monotonic() < deadline:
-            root.update()
-            time.sleep(.02)
-        assert not home._closed, 'pet must reopen automatically'
+        # Observe the transition time rather than sampling just before four
+        # seconds: a delayed update() can legitimately cross that boundary.
+        reopened = []
+        set_closed = home._set_closed
+        def observe_eyes(value):
+            if not value:
+                reopened.append(time.monotonic())
+            set_closed(value)
+        with patch.object(home, '_set_closed', side_effect=observe_eyes):
+            started = time.monotonic()
+            home.pet_head()
+            assert home._closed
+            deadline = started + 8
+            while not reopened and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.02)
+            assert reopened, 'pet must reopen automatically'
+            assert reopened[0] - started >= 3.98, 'repeated pet must restart the four-second hold'
         home._blink()
         assert home._closed
         home._finish_blink()
@@ -116,6 +125,65 @@ def main() -> int:
             print("page ok:", key, app.pages[key].winfo_reqwidth(),
                   app.pages[key].winfo_reqheight())
         page_targets = app.pages["targets"]
+        assert page_targets.news_test_chat.get() == 'test'
+        page_targets.news_test_chat.set('')
+        with patch.object(service, 'send_test_news') as send:
+            page_targets.send_test_news()
+            send.assert_not_called()
+        entered_news, release_news = threading.Event(), threading.Event()
+        def fake_news(chat):
+            assert chat == '可设置的新闻测试群'
+            entered_news.set()
+            release_news.wait(5)
+            return {'ok': True, 'message': '新闻测试已完成'}
+        page_targets.news_test_chat.set('可设置的新闻测试群')
+        with patch.object(service, 'send_test_news', side_effect=fake_news) as send:
+            page_targets.send_test_news()
+            assert entered_news.wait(3) and page_targets.news_test_btn._busy
+            page_targets.send_test_news()
+            assert send.call_count == 1
+            app.show_page('home')
+            release_news.set()
+            deadline = time.monotonic() + 5
+            while page_targets._news_test_busy and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.02)
+            assert not page_targets._news_test_busy and not page_targets.news_test_btn._busy
+            assert page_targets.news_test_status.cget('text') == '新闻测试已完成'
+        assert ConfigStore(config.path).data['news']['test_chat'] == '可设置的新闻测试群'
+        # The manual test stays responsive and completes after navigating away.
+        reply_page = app.pages['listen_reply']
+        assert reply_page.followup_timeout.get() == '5'
+        reply_page.followup_timeout.set('8')
+        reply_page.save()
+        assert ConfigStore(config.path).bot['followup_timeout_minutes'] == 8
+        assert reply_page.voice_test_chat.get() == 'test'
+        entered, release = threading.Event(), threading.Event()
+        def fake_voice(chat, preset_id=''):
+            assert chat == '可设置的测试群' and preset_id == 'plana'
+            entered.set()
+            release.wait(5)
+            return {'ok': True, 'message': '测试已完成'}
+        reply_page.voice_test_chat.set('')
+        with patch.object(service, 'send_test_voice') as send:
+            reply_page.send_test_voice()
+            send.assert_not_called()
+        reply_page.voice_test_chat.set('可设置的测试群')
+        reply_page.voice_preset.set(reply_page._voice_id_map['plana'])
+        with patch.object(service, 'send_test_voice', side_effect=fake_voice) as send:
+            reply_page.send_test_voice()
+            assert entered.wait(3) and reply_page.voice_test_btn._busy
+            reply_page.send_test_voice()
+            assert send.call_count == 1
+            app.show_page('home')
+            release.set()
+            deadline = time.monotonic() + 5
+            while reply_page._voice_test_busy and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.02)
+            assert not reply_page._voice_test_busy and not reply_page.voice_test_btn._busy
+            assert reply_page.voice_test_status.cget('text') == '测试已完成'
+        assert ConfigStore(config.path).bot['voice_test_chat'] == '可设置的测试群'
         sample_target = {"id": "test", "name": "文件传输助手", "type": "friend",
                          "enabled": True, "persona_id": "arona", "require_at": True,
                          "context_limit": 30, "reply_probability": 1.0, "note": ""}

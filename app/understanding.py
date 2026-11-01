@@ -52,6 +52,47 @@ def _keywords(text: str) -> list[str]:
     return values[:10]
 
 
+_TEXT_REPLY_REQUEST = re.compile(
+    r"(?:不要|别|不用|不想|无需|不需要|禁止)[^，,。；;！？!?]{0,8}(?:语音|声音|朗读|念(?:一下|一遍|出来|给我听)|喵|汪|叫一声)|"
+    r"(?:只|改用|改成|请用|用)文字(?:回复|回答|说|就好|就行)"
+)
+
+
+def _voice_request_text(content: str) -> str:
+    text = _WXID.sub("", _LABEL.sub("", str(content or ""))).strip()
+    if "<appmsg" in text:
+        return ""
+    return re.sub(r'''“[^”]*”|「[^」]*」|『[^』]*』|‘[^’]*’|"[^"]*"|'[^']*' ''', '', text, flags=re.X)
+
+
+def voice_reply_forbidden(content: str) -> bool:
+    """An explicit text-only request also vetoes random automatic voice."""
+    return bool(_TEXT_REPLY_REQUEST.search(_voice_request_text(content)))
+
+
+def voice_reply_requested(content: str) -> bool:
+    """Recognise explicit audible-output requests, not quoted/discussed ones."""
+    text = _voice_request_text(content)
+    if _TEXT_REPLY_REQUEST.search(text):
+        return False
+    if re.search(r"是什么意思|什么意思|有什么(?:用|好处|区别)|(?:怎么|如何)(?:实现|设置|开启)", text):
+        return False
+    request = re.search(
+        r"(?:用|以)(?:语音|声音)(?:来)?(?:回复|回答|回我|说|读|念)|"
+        r"(?:语音|声音)(?:回复|回答|回我)|(?:发|发送|回)(?:我|给我)?(?:一|个|条|段|一条|一段)?语音|"
+        r"说给我听|读给我听|念给我听|(?:朗读|念一下|读一下)|"
+        r"(?:想听|让我听听|给我听听)(?:你|阿洛娜)?的?声音|"
+        r"(?:喵|汪|叫|喊|笑|哼)(?:一|个|两|几)声|(?:学|模仿)(?:一下)?(?:猫|狗)叫", text)
+    if not request:
+        return False
+    prefix = text[:request.start()]
+    if (re.fullmatch(r"(?:我|他|她|我们|他们|有人|别人|小明|小红)(?:刚才|刚刚|昨天|已经|曾经|之前|想|要|打算|准备|会|也|在)*", prefix.strip())
+            and not request.group().startswith(("想听", "让我听听", "给我听听"))):
+        return False
+    reported = re.search(r"(?:昨天|刚才|之前|上次|他|她|别人|有人|小明|小红).{0,12}(?:说|问|让|要求)|转述|听说|提到", prefix)
+    return not reported or bool(re.search(r"现在请|这次请|我想听|我希望", prefix[reported.end():]))
+
+
 def understand_message(text: str, history: list[dict] | None = None,
                        target_type: str = "friend") -> Understanding:
     clean = _clean_content(text)

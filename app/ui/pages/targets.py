@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import logging
 import tkinter as tk
 from datetime import datetime
 from tkinter import ttk
@@ -18,6 +19,8 @@ from ...ui.widgets import (
     confirm,
 )
 from .base import BasePage
+
+log = logging.getLogger(__name__)
 
 
 class TargetDialog(BaseDialog):
@@ -208,6 +211,7 @@ class TargetsPage(BasePage):
     def __init__(self, parent, app) -> None:
         super().__init__(parent, app)
         self._persona_ids: list[str] = []
+        self._news_test_busy = False
         self._build()
         self.refresh()
 
@@ -266,6 +270,29 @@ class TargetsPage(BasePage):
                         bg=C["card"], fg=C["muted"], font=font(8), anchor="w")
         hint.pack(fill="x", pady=(px(4), 0))
 
+        news = Card(wrap, padding=16, accent=C["pink"])
+        news.pack(fill="x", pady=(0, px(14)))
+        tk.Label(news.body, text="基沃托斯新闻 · 手动测试", bg=C["card"], fg=C["text"],
+                 font=font(10, "bold"), anchor="w").pack(fill="x")
+        tk.Label(news.body, text="选择或填写测试群聊，立即采集并发送；不占用当天正式名额，也不写入正式去重记录。",
+                 bg=C["card"], fg=C["muted"], font=font(8), anchor="w",
+                 wraplength=px(850)).pack(fill="x", pady=(px(5), px(8)))
+        news_row = tk.Frame(news.body, bg=C["card"])
+        news_row.pack(fill="x")
+        tk.Label(news_row, text="测试群聊", bg=C["card"], fg=C["text_soft"],
+                 font=font(9)).pack(side="left", padx=(0, px(8)))
+        self.news_test_chat = ttk.Combobox(news_row, style="Arona.TCombobox", font=font(9))
+        self.news_test_chat.pack(side="left", fill="x", expand=True, padx=(0, px(10)))
+        self.news_test_chat.set(self.config.data.get("news", {}).get("test_chat", "test"))
+        self.news_test_btn = RoundedButton(
+            news_row, text="立即发送测试新闻", command=self.send_test_news,
+            style="primary", width=160, height=34, bg=C["card"], font_size=9)
+        self.news_test_btn.pack(side="left")
+        self.news_test_status = tk.Label(news.body, text="请先启动机器人并连接微信；目标群聊会自动保存。",
+                                         bg=C["card"], fg=C["muted"], font=font(8),
+                                         anchor="w", wraplength=px(850))
+        self.news_test_status.pack(fill="x", pady=(px(8), 0))
+
         header = tk.Frame(wrap, bg=C["bg"])
         header.pack(fill="x", pady=(0, px(7)))
         self.count_label = tk.Label(header, text="已监听 0 个对象", bg=C["bg"],
@@ -280,6 +307,44 @@ class TargetsPage(BasePage):
     def on_show(self) -> None:
         self.refresh()
 
+    def send_test_news(self) -> None:
+        if self._news_test_busy:
+            return
+        chat = self.news_test_chat.get().strip()
+        if not chat:
+            self.app.toast("请填写测试群聊的完整名称。", "warn")
+            return
+        self.config.data.setdefault("news", {})["test_chat"] = chat
+        try:
+            self.config.save()
+        except OSError as exc:
+            log.warning("保存测试新闻目标失败：%s", exc)
+            self.app.toast("无法保存测试群聊，请检查配置文件权限。", "error")
+            return
+        self._news_test_busy = True
+        self.news_test_btn.set_busy(True, "采集发送中…")
+        self.news_test_status.configure(text=f"正在采集新闻并向「{chat}」发送，请稍候。",
+                                         fg=C["cyan_deep"])
+
+        def worker() -> None:
+            try:
+                result = self.service.send_test_news(chat)
+            except Exception as exc:
+                log.warning("测试新闻任务失败：%s", exc)
+                result = {"ok": False, "message": "测试新闻发送失败，请查看运行日志。"}
+            self.service.emit("news_test_done", result)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_event(self, kind: str, data: dict) -> None:
+        if kind != "news_test_done":
+            return
+        self._news_test_busy = False
+        self.news_test_btn.set_busy(False, "立即发送测试新闻")
+        message = data.get("message") or "测试新闻发送失败。"
+        self.news_test_status.configure(text=message, fg=C["green"] if data.get("ok") else C["red"])
+        self.app.toast(message, "success" if data.get("ok") else "warn")
+
     def _refresh_personas(self) -> None:
         people = self.personas.list()
         self._persona_ids = [p["id"] for p in people]
@@ -292,6 +357,8 @@ class TargetsPage(BasePage):
 
     def refresh(self) -> None:
         self._refresh_personas()
+        names = ["test"] + [t["name"] for t in self.config.targets() if t.get("type") == "group"]
+        self.news_test_chat.configure(values=list(dict.fromkeys(names)))
         for child in self.list_frame.winfo_children():
             child.destroy()
         targets = self.config.targets()

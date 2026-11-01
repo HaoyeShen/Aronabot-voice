@@ -16,7 +16,7 @@ from app import __version__
 
 OUT = ROOT / 'release'
 SOURCE_DIRS = ('app', 'assets', 'tests', 'scripts', 'tools', 'docs', 'vendor')
-SOURCE_FILES = ('run.py', 'README.md', 'CHANGELOG.md', 'LICENSE', 'index.html',
+SOURCE_FILES = ('run.py', 'send_test_voice.py', 'README.md', 'CHANGELOG.md', 'LICENSE', 'index.html',
                 'requirements.txt', 'requirements-wechatauto.txt', '.gitignore', 'ARONA.spec',
                 '.github/workflows/release.yml')
 SECRET = re.compile(rb'(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{30,}|sk-[A-Za-z0-9]{25,})')

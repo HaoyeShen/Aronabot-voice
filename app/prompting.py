@@ -43,6 +43,53 @@ def self_name_rule(name: str = "阿洛娜") -> str:
 SELF_NAME_RULE = self_name_rule("阿洛娜")
 
 
+def knowledge_rule(persona: dict) -> str:
+    """Improve factual answers without changing stored personality fields."""
+    if persona.get("id") != "arona" and persona.get("name") != "阿洛娜":
+        return ""
+    return (
+        "【阿洛娜的知识表达】\n"
+        "你见多识广，能用已有的科学、历史、文学、生活、技术和游戏知识帮助对方；"
+        "知识范围不限于基沃托斯，遇到常识问题不要故意装傻或只卖萌。"
+        "知识提问先给准确的结论、关键事实或原因，纠正明显的错误前提；"
+        "在当前短句字数限制内优先保留有用信息，复杂问题先答核心，不硬塞细节。"
+        "保留原有温柔、元气、略迷糊的性格、微信昵称加老师的称呼和口语表达。"
+        "有把握的通识直接回答；资料不足或确实不确定时坦诚说明，必要时只问一个关键条件。"
+        "区分事实与推测，不编造数字、出处或角色设定；最新消息、现价、现行规则等"
+        "必须有本轮可用的可靠时效资料才能确定回答，没有就说明需要核实，不假装联网查过。"
+        "本地资料仅在相关时参考；闲聊和安慰照常，不主动讲课，不输出思考过程。"
+    )
+
+
+def advice_rule(persona: dict) -> str:
+    """Keep everyday advice invited, practical and in Arona's usual voice."""
+    if persona.get("id") != "arona" and persona.get("name") != "阿洛娜":
+        return ""
+    return (
+        "【日常建议与个人看法】\n"
+        "先结合当前发言者和上下文，区分对方是在向你求建议、问知识/评价，还是只分享经历或情绪。"
+        "只有对方明确向你求建议（如‘给我个建议’‘我该怎么办’‘帮我选一下’），"
+        "或明确接续此前向你求建议的对话时，才给行动建议。"
+        "被@、提到你的名字或第三人称讨论你，只代表可能需要回应，不代表在求建议；"
+        "转述别人求建议、反问、说‘别给建议’、向其他人求建议，也不算向你求建议。"
+        "求建议时像一个认真关心对方的普通朋友，给一个具体、简单、能尝试的做法或选择理由；"
+        "不用很专业，不冒充专家，不敷衍，不只开玩笑、卖萌或说空泛的安慰。"
+        "缺少决定建议的关键条件时只问一个问题；尊重对方的选择，不命令、不说教，不保证结果。"
+        "没有明确求建议时，可以表达自己的偏好、判断、感受和看法，也可以共情或回答事实，"
+        "但不要主动安排对方下一步、给解决方案，或劝人休息、喝水、调整作息。"
+        "‘你觉得这首歌怎么样’是在问看法，不要顺带教对方怎么做；"
+        "‘今天好累’是在表达感受，不要自动接‘去休息吧’。"
+        "不能用‘我觉得你应该’‘要不试试’把未被请求的建议伪装成看法。"
+        "历史或角色示例里未被请求就给建议的措辞，不要照搬。"
+        "例如转述‘小明问小红复习走神怎么办’，只回应‘看起来他们聊得很认真呢’，"
+        "不要替他们解答，也不要主动提出帮忙；以我觉得开头的做法建议仍然是建议。"
+        "安慰不需要对方先求建议：允许主动表达关心、认可情绪、认真倾听和温柔陪伴。"
+        "不要嘲笑、责怪、淡化痛苦或用玩笑敷衍，也不承诺‘一定会好’；"
+        "可以说‘听起来真的很委屈，我在听’，不要未经请求就转成解决问题或教对方怎么做。"
+        "继续遵守既有称呼、短句字数、人格和紧急危险处理规则，只输出自然的最终回复。"
+    )
+
+
 def address_name(name: object) -> str:
     """Return the teacher's WeChat nickname + 老师, with safe fallbacks."""
     clean = re.sub(r"\s+", " ", str(name or "")).strip().strip("[]【】")
@@ -250,6 +297,8 @@ def build_system_prompt(persona: dict, stickers: list[dict], *,
         sections.append(f"【你的微信昵称】{bot_name}（群聊中被 @ 时使用）")
     if training_block:
         sections.append(training_block)
+    sections.append(knowledge_rule(persona))
+    sections.append(advice_rule(persona))
     sections.append(self_name_rule(persona.get("name", "阿洛娜")))
     return "\n\n".join(section for section in sections if section.strip())
 
@@ -318,6 +367,8 @@ def build_compact_system_prompt(persona: dict, stickers: list[dict], *,
         )
     if training_block:
         lines.append(training_block)
+    lines.append(knowledge_rule(persona))
+    lines.append(advice_rule(persona))
     lines.append(self_name_rule(persona.get("name", "阿洛娜")))
     return "\n".join(line for line in lines if line)
 
@@ -622,6 +673,31 @@ def at_mentioned(content: str, bot_name: str, self_names: Iterable[str] = ()) ->
     return True
 
 
+def group_audience(content: str, names: list[str]) -> str:
+    """Conservative offline addressee check, not a probability/trigger rule."""
+    text = re.sub(r"^\s*wxid_[^\s:]+:\r?\n", "", str(content or "")).strip()
+    text = strip_group_prefix(text)
+    if "<appmsg" in text:
+        return "UNKNOWN"
+    mentions = re.findall(r"(?<![A-Za-z0-9_./?=&%+-])[@＠]([^\s，,。！？!?：:]+)", text)
+    public_names = {"所有人", "全体成员", "大家", "all"}
+    bot_names = {str(n).lower() for n in names if n}
+    if mentions:
+        if any(n.lower() in bot_names for n in mentions):
+            return "BOT"
+        if any(n.lower() not in public_names for n in mentions):
+            return "OTHER"
+        return "ALL"
+    if re.search(r"^(?:请问|请教|问一下|麻烦)?\s*(?:大家|各位|群友们?|全体成员)(?:[，,：:\s]|好|早|晚|有|都|能|来|一起|随便|觉得|认为|怎么|想|注意|请|看|听)", text):
+        return "ALL"
+    if re.search(r"^(?:请问)?(?:有没有人|有人知道|谁知道|有谁知道|有人能|有谁能)", text):
+        return "ALL"
+    public_subjects = "|".join(re.escape(n) for n in names if n)
+    if public_subjects and re.search(rf"^(?:{public_subjects})(?:好|真|太|很|的|是|也|看起来)", text, re.I):
+        return "ALL"
+    return "UNKNOWN"
+
+
 def addressed_to_bot(content: str, names: list[str] | tuple[str, ...]) -> bool:
     """Heuristic: is this message actually calling/asking the bot?
 
@@ -637,6 +713,7 @@ def addressed_to_bot(content: str, names: list[str] | tuple[str, ...]) -> bool:
         "你能", "你可以", "能不能", "可以", "请问", "告诉我", "回答",
         "过来", "陪我", "说说", "讲讲", "怎么办", "为什么", "是不是",
         "有没有", "今天", "现在", "在干嘛", "在做什么",
+        "喵一声", "汪一声", "发语音", "用语音", "读给我听", "说给我听", "念一下", "学猫叫",
     )
     for raw_name in names:
         name = str(raw_name).strip()
