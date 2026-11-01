@@ -148,6 +148,8 @@ def run_ui_smoke(timeout_ms: int = 1800) -> int:
             state = service.state()
             if not app.bank.photo('assets/avatar_96.png', (32, 32)):
                 raise RuntimeError('Bundled avatar resource is missing')
+            if len(service.stickers.enabled()) < 8:
+                raise RuntimeError('Bundled default stickers are missing')
             print(f"UI smoke: window={root.winfo_width()}x{root.winfo_height()} "
                   f"page={app._current_page} pages={pages_now} targets={state['target_count']}")
             for key in PAGE_CLASSES:

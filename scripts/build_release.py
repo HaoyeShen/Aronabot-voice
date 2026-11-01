@@ -86,6 +86,10 @@ def build_windows():
 
 
 def main():
+    from app.defaults import default_stickers
+    missing = [item['file'] for item in default_stickers() if not (ROOT/item['file']).is_file()]
+    if missing:
+        raise FileNotFoundError('Missing built-in sticker resources: '+', '.join(missing))
     source = source_zip()
     files = [source]
     if '--windows' in sys.argv:

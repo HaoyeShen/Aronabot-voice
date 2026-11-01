@@ -72,7 +72,8 @@ def test_memory() -> None:
 
 
 def test_prompt_and_stickers() -> None:
-    stickers = StickerStore().enabled()
+    with tempfile.TemporaryDirectory() as tmp:
+        stickers = StickerStore(Path(tmp) / 'stickers.json').enabled()
     assert_true(len(stickers) >= 8, "sample stickers")
     persona = PersonaStore().get("arona")
     system = build_system_prompt(persona, stickers, target_name="文件传输助手",
