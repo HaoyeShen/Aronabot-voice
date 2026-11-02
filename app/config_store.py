@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -21,6 +22,16 @@ from .paths import CONFIG_FILE, PERSONAS_FILE, STICKERS_FILE, STICKER_DIR, ROOT,
 log = logging.getLogger(__name__)
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+
+
+def video_topics(value) -> list[str]:
+    """An empty target list inherits the global topics; old configs stay valid."""
+    if isinstance(value, str):
+        value = re.split(r"[,，\n]", value)
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(str(t).strip()[:50] for t in value
+                              if isinstance(t, str) and t.strip()))[:10]
 
 
 def _now() -> str:
@@ -141,6 +152,27 @@ class ConfigStore:
             group_probability = 0.3
         bot["group_reply_probability"] = max(0.0, min(1.0, group_probability))
         bot["group_at_include_self_name"] = bool(bot.get("group_at_include_self_name", True))
+        bot["idle_chat_enabled"] = bool(bot.get("idle_chat_enabled", True))
+        bot["idle_video_enabled"] = bool(bot.get("idle_video_enabled", True))
+        bot["idle_video_topics"] = video_topics(bot.get("idle_video_topics")) or ["蔚蓝档案"]
+        try:
+            video_probability = float(bot.get("idle_video_probability", 1.0))
+            if not math.isfinite(video_probability):
+                raise ValueError
+            bot["idle_video_probability"] = max(0.0, min(1.0, video_probability))
+        except (TypeError, ValueError):
+            bot["idle_video_probability"] = 1.0
+        try:
+            idle_probability = float(bot.get("idle_chat_probability", 0.03))
+            if not math.isfinite(idle_probability):
+                raise ValueError
+            bot["idle_chat_probability"] = max(0.0, min(1.0, idle_probability))
+        except (TypeError, ValueError):
+            bot["idle_chat_probability"] = 0.03
+        try:
+            bot["idle_chat_minutes"] = max(1, min(1440, int(bot.get("idle_chat_minutes", 30))))
+        except (TypeError, ValueError):
+            bot["idle_chat_minutes"] = 30
         try:
             bot["followup_timeout_minutes"] = max(1, min(1440, int(bot.get("followup_timeout_minutes", 5))))
         except (TypeError, ValueError):
@@ -253,6 +285,7 @@ class ConfigStore:
                 "group_reply_probability": max(0.0, min(1.0, target_group_probability)),
                 "news_enabled": bool(t.get("news_enabled", False)),
                 "news_time": news_time,
+                "idle_video_topics": video_topics(t.get("idle_video_topics")),
                 "note": str(t.get("note", "")),
                 "added_at": t.get("added_at") or _now(),
             })

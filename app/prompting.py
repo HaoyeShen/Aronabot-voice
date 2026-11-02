@@ -269,7 +269,7 @@ def build_system_prompt(persona: dict, stickers: list[dict], *,
             "【群聊规则】\n"
             f"你处在多人聊天中。当前回复的群友是「{recipient}」，称呼对方为「{recipient}」；"
             "其他群友也用各自的「微信昵称+老师」称呼，不能直呼裸昵称，也不能只叫「老师」。\n"
-            "只有明确对你说话、或上下文明显在接你的话时才回应；回复要短，避免刷屏。"
+            "可以回应对你或全群说的话；系统确认允许参与公开讨论时，也可以自然接话。回复要短，避免刷屏。"
         )
     else:
         sections.append(f"【私聊规则】\n对方是「{recipient}」，回复时称呼对方为「{recipient}」；\n"
@@ -354,7 +354,7 @@ def build_compact_system_prompt(persona: dict, stickers: list[dict], *,
     if boundaries:
         lines.append("边界：" + boundaries)
     if target_type == "group":
-        lines.append("这是群聊，回复要短；只接明确对你说的话。")
+        lines.append("这是群聊，回复要短；回应对你或全群说的话，系统确认允许参与公开讨论时也可自然接话。")
     if stickers_enabled and stickers:
         catalog = "、".join(
             f"{s.get('name')}({s.get('emotion', '')}；{'/'.join(str(t) for t in s.get('tags', [])[:3])})"

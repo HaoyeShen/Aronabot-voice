@@ -342,6 +342,19 @@ def test_config_crud() -> None:
         else:
             raise AssertionError("empty target name must fail")
         assert_true(config.bot["context_limit"] >= 20, "min context 20")
+        group_a = config.add_target('主题群A', 'group', 'arona')['id']
+        group_b = config.add_target('主题群B', 'group', 'arona')['id']
+        assert config.target_by_name('主题群A')['idle_video_topics'] == [], 'old target defaults inherit global'
+        config.update_target(group_a, {'idle_video_topics':'Python，蔚蓝档案,Python'})
+        config.update_target(group_b, {'idle_video_topics':['明日方舟']})
+        saved = ConfigStore(config.path)
+        assert saved.target_by_name('主题群A')['idle_video_topics'] == ['Python', '蔚蓝档案']
+        assert saved.target_by_name('主题群B')['idle_video_topics'] == ['明日方舟']
+        for value in (None, {}, 123, '', []):
+            config.update_target(group_a, {'idle_video_topics':value})
+            assert config.target_by_name('主题群A')['idle_video_topics'] == []
+        config.update_target(group_a, {'idle_video_topics':[' ', ' Python ', 'Python', 123]})
+        assert config.target_by_name('主题群A')['idle_video_topics'] == ['Python']
 
 
 if __name__ == "__main__":

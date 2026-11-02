@@ -21,6 +21,7 @@ data/images/
 data/admin_state.json
 
 data/news_state.json
+data/idle_video_state.json
 
 data/voice_presets.json
 release/

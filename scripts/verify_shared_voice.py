@@ -22,7 +22,7 @@ from app.wechat_adapter import WeChatAutoAdapter, IncomingMessage
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', choices=['link', 'preview', 'voice', 'requested-voice', 'alias-identity', 'semantic', 'quote', 'news-test'])
+    parser.add_argument('mode', choices=['link', 'preview', 'voice', 'requested-voice', 'alias-identity', 'semantic', 'quote', 'news-test', 'idle-chat', 'idle-video'])
     parser.add_argument('--no-send', action='store_true')
     parser.add_argument('--chat-name', help='Read-only alias identity check: original group name')
     parser.add_argument('--remark', help='Read-only alias identity check: group remark')
@@ -101,6 +101,48 @@ def main():
             service._adapter = adapter
             service._running = True
             try:
+                if args.mode in ('idle-chat', 'idle-video'):
+                    # Isolate the forced draw and simulated silence to test only.
+                    # The real configuration and every other group are untouched.
+                    local.data['targets'] = [{'name': 'test', 'type': 'group', 'enabled': True,
+                                              'persona_id': local.data.get('active_persona_id', 'arona')}]
+                    local.bot.update(idle_chat_enabled=True, idle_chat_probability=1,
+                                     idle_chat_minutes=30, auto_reply=True,
+                                     idle_video_enabled=args.mode == 'idle-video',
+                                     idle_video_topics=['蔚蓝档案'], idle_video_probability=1)
+                    from app.bilibili_video import BilibiliVideoStore
+                    service.idle_videos = BilibiliVideoStore(base / 'video-state.json')
+                    service._sync_idle_groups(adapter)
+                    state = service._idle_chats['test']
+                    state['last'] -= 1801
+                    user = next(iter(adapter.target_usernames()))
+                    before = adapter._last_seq(user)
+                    service._idle_tick()
+                    assert state['sent'], 'no idle message sent (quiet hours may be active)'
+                    text = state['last_text']
+                    bubbles = memory.recent('test', 1)[-1]['meta']['bubbles']
+                    assert 1 <= len(bubbles) <= 3 and all(0 < len(s) <= 23 for s in bubbles)
+                    if args.mode == 'idle-video':
+                        assert bubbles[0].startswith('https://b23.tv/'), 'video unavailable; greeting was sent instead'
+                        assert len(bubbles) >= 2 and all(len(s) <= 15 for s in bubbles[1:])
+                    service._idle_tick()
+                    for _ in range(12):
+                        rows = adapter._db.get_messages(user, limit=10)
+                        matches = [row for row in rows if int(row.get('sort_seq', 0)) > before
+                                   and str(row.get('sender_username') or '') == adapter.self_wxid
+                                   and str(row.get('content') or '').strip() in bubbles]
+                        if len(matches) == len(bubbles):
+                            assert {str(r.get('content') or '').strip() for r in matches} == set(bubbles)
+                            print('IDLE_CHAT_OUTGOING_DB_CONFIRMED', True)
+                            print('IDLE_CHAT_ONCE_PER_SILENCE_VERIFIED', True)
+                            if args.mode == 'idle-video':
+                                assert service.idle_videos.state_path.exists()
+                                print('VIDEO_LINK_AND_DEDUP_RECORD_VERIFIED', True)
+                                print('VIDEO_COMMENT_BUBBLE_LENGTHS', [len(s) for s in bubbles[1:]])
+                            return 0
+                        time.sleep(.5)
+                    print('IDLE_CHAT_SENT_BUT_DB_NOT_CONFIRMED')
+                    return 1
                 if args.mode == 'news-test':
                     from app.news import NewsService
                     service.news = NewsService(local, PersonaStore(), state_path=base / 'news.json')

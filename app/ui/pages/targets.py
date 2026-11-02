@@ -8,6 +8,7 @@ import tkinter as tk
 from datetime import datetime
 from tkinter import ttk
 
+from ...config_store import video_topics
 from ...ui.theme import C, display_font, font, px, truncate
 from ...ui.widgets import (
     BaseDialog,
@@ -29,7 +30,9 @@ class TargetDialog(BaseDialog):
         self.target = target
         super().__init__(parent, "编辑测试对象", "只有白名单中的会话会被回复", width=560,
                          height=670, icon=page.icon)
-        body = tk.Frame(self.body, bg=C["card"])
+        self.scroll = ScrollFrame(self.body, bg=C["card"])
+        self.scroll.pack(fill="both", expand=True)
+        body = tk.Frame(self.scroll.inner, bg=C["card"])
         body.pack(fill="both", expand=True, padx=px(24), pady=px(20))
         self.name = LabeledEntry(body, "微信显示名称", target.get("name", ""),
                                  hint="需与聊天窗口标题一致", width=30)
@@ -92,13 +95,24 @@ class TargetDialog(BaseDialog):
             hint="HH:MM", width=8,
         )
         self.news_time.pack(side="left", fill="x", expand=True, padx=(px(10), 0))
+        self.idle_video_topics = LabeledEntry(
+            body, "活跃气氛视频主题（本群）", "，".join(target.get("idle_video_topics") or []),
+            hint="多个主题用逗号分隔；留空沿用全局主题", width=30)
         self.note = LabeledEntry(body, "备注（可选）", target.get("note", ""), width=30)
         self.note.pack(fill="x", pady=(px(4), 0))
+        self.kind.bind("<<ComboboxSelected>>", self._show_video_topics)
+        self._show_video_topics()
         self.error = tk.Label(body, text="", bg=C["card"], fg=C["red"], font=font(8),
                               anchor="w")
         self.error.pack(fill="x", pady=(px(6), 0))
         self.add_footer("取消", self.close, "secondary", 90)
         self.add_footer("保存", self._save, "primary", 100)
+
+    def _show_video_topics(self, _event=None) -> None:
+        if self.kind.get() == "群聊":
+            self.idle_video_topics.pack(fill="x", before=self.note, pady=(px(4), px(8)))
+        else:
+            self.idle_video_topics.pack_forget()
 
     def _save(self) -> None:
         name = self.name.get()
@@ -130,6 +144,7 @@ class TargetDialog(BaseDialog):
                 "group_reply_probability": group_probability,
                 "news_enabled": news_enabled,
                 "news_time": news_time,
+                "idle_video_topics": video_topics(self.idle_video_topics.get()),
                 "require_at": bool(self.target.get("require_at", True)),
                 "note": self.note.get(),
             })
@@ -177,11 +192,18 @@ class TargetRow(tk.Frame):
         news_note = ""
         if target.get("news_enabled"):
             news_note = f"  ·  新闻 {target.get('news_time', '06:50')}"
+        video_note = ""
+        if target.get("type") == "group":
+            topics = target.get("idle_video_topics")
+            video_note = "活跃视频：" + (truncate(" / ".join(topics), 20) if topics else "沿用全局")
         note = (f"人格：{persona.get('name', '阿洛娜')}  ·  已存 {context_count} 条上下文"
                 f"  ·  上下文窗口 {target.get('context_limit', 30)}{probability_note}{news_note}")
         if target.get("note"):
             note += "  ·  " + truncate(target.get("note"), 26)
         tk.Label(mid, text=note, bg=bg, fg=C["muted"], font=font(8), anchor="w").pack(fill="x")
+        if video_note:
+            tk.Label(mid, text=video_note, bg=bg, fg=C["cyan_deep"],
+                     font=font(7), anchor="w").pack(fill="x", pady=(px(2), 0))
         actions = tk.Frame(inner, bg=bg)
         actions.pack(side="right")
         if target.get("type") == "group":

@@ -153,6 +153,24 @@ def main() -> int:
         assert ConfigStore(config.path).data['news']['test_chat'] == '可设置的新闻测试群'
         # The manual test stays responsive and completes after navigating away.
         reply_page = app.pages['listen_reply']
+        assert reply_page.idle_chat_enabled.get()
+        assert float(reply_page.idle_chat_probability.get()) == 3
+        assert reply_page.idle_chat_minutes.get() == '30'
+        assert reply_page.idle_video_enabled.get()
+        assert reply_page.idle_video_topics.get() == '蔚蓝档案'
+        assert float(reply_page.idle_video_probability.get()) == 100
+        reply_page.idle_video_topics.set('蔚蓝档案，明日方舟,蔚蓝档案')
+        reply_page.idle_video_probability.set('65')
+        reply_page.idle_chat_probability.set('7.5')
+        reply_page.idle_chat_minutes.set('45')
+        reply_page.save()
+        saved_bot = ConfigStore(config.path).bot
+        assert saved_bot['idle_chat_probability'] == .075 and saved_bot['idle_chat_minutes'] == 45
+        assert saved_bot['idle_video_topics'] == ['蔚蓝档案', '明日方舟']
+        assert saved_bot['idle_video_probability'] == .65
+        reply_page.idle_chat_probability.set('0')
+        reply_page.save()
+        assert ConfigStore(config.path).bot['idle_chat_probability'] == 0
         assert reply_page.followup_timeout.get() == '5'
         reply_page.followup_timeout.set('8')
         reply_page.save()
@@ -184,6 +202,23 @@ def main() -> int:
             assert not reply_page._voice_test_busy and not reply_page.voice_test_btn._busy
             assert reply_page.voice_test_status.cget('text') == '测试已完成'
         assert ConfigStore(config.path).bot['voice_test_chat'] == '可设置的测试群'
+        group_a_id = config.add_target('主题界面群A', 'group', 'arona')['id']
+        group_b_id = config.add_target('主题界面群B', 'group', 'arona')['id']
+        for name, topics in [('主题界面群A', 'Python，蔚蓝档案'), ('主题界面群B', '明日方舟')]:
+            dialog = TargetDialog(root, page_targets, config.target_by_name(name))
+            assert dialog.idle_video_topics.winfo_manager() == 'pack'
+            dialog.idle_video_topics.set(topics)
+            with patch.object(app, 'reload_listening'):
+                dialog._save()
+        saved = ConfigStore(config.path)
+        assert saved.target_by_name('主题界面群A')['idle_video_topics'] == ['Python', '蔚蓝档案']
+        assert saved.target_by_name('主题界面群B')['idle_video_topics'] == ['明日方舟']
+        dialog = TargetDialog(root, page_targets, config.target_by_name('主题界面群A'))
+        assert dialog.idle_video_topics.get() == 'Python，蔚蓝档案'
+        dialog.idle_video_topics.set('')
+        with patch.object(app, 'reload_listening'):
+            dialog._save()
+        assert ConfigStore(config.path).target_by_name('主题界面群A')['idle_video_topics'] == []
         sample_target = {"id": "test", "name": "文件传输助手", "type": "friend",
                          "enabled": True, "persona_id": "arona", "require_at": True,
                          "context_limit": 30, "reply_probability": 1.0, "note": ""}
@@ -211,6 +246,12 @@ def main() -> int:
         ]
         for name, factory in dialogs:
             dialog = factory()
+            if name == 'target':
+                assert not dialog.idle_video_topics.winfo_manager()
+                dialog.kind.set('群聊')
+                dialog.kind.event_generate('<<ComboboxSelected>>')
+                root.update_idletasks()
+                assert dialog.idle_video_topics.winfo_manager() == 'pack'
             dialog.update_idletasks()
             print("dialog ok:", name, dialog.winfo_reqwidth(), dialog.winfo_reqheight())
             dialog.destroy()

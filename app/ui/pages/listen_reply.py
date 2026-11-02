@@ -5,6 +5,8 @@ from __future__ import annotations
 import tkinter as tk
 import threading
 import logging
+import math
+import re
 from datetime import datetime
 from tkinter import ttk
 
@@ -184,7 +186,7 @@ class ListenReplyPage(BasePage):
         self.group_at_self_name.pack(fill="x")
         self.group_probability = ToggleRow(
             group_frame, "群聊未 @ 概率回复",
-            "没被 @ 时，确认对阿洛娜或全群说话后按概率回复；对其他人说话不插话。",
+            "对阿洛娜、全群或符合参与门槛的讨论按概率回复；超过4人或连续超过15条即可参与，明确问他人则避开。",
             self.config.bot.get("group_probability_reply", True),
         )
         self.group_probability.pack(fill="x")
@@ -205,6 +207,44 @@ class ListenReplyPage(BasePage):
         tk.Label(group_frame, text="@ 回复后，确认仍对她说话就继续回复，无需再次 @。\n连续 5 条非对她发言或超时后退出，各群独立。",
                  bg=C["card"], fg=C["muted"], font=font(7), anchor="w",
                  justify="left", wraplength=px(420)).pack(fill="x", pady=(px(4), 0))
+
+        idle = Card(left, padding=16, accent=C["pink"])
+        idle.pack(fill="x", pady=(px(12), 0))
+        SectionHeading(idle.body, "群聊冷场时主动发言", "偶尔出来冒个泡").pack(
+            fill="x", pady=(0, px(8)))
+        self.idle_chat_enabled = ToggleRow(
+            idle.body, "空闲时活跃气氛", "仅限已启用的群聊；遵守免打扰、自动回复和管理员暂停。",
+            self.config.bot.get("idle_chat_enabled", True))
+        self.idle_chat_enabled.pack(fill="x", pady=px(4))
+        self.idle_chat_minutes = LabeledEntry(
+            idle.body, "多久无人发言（分钟）", str(self.config.bot.get("idle_chat_minutes", 30)),
+            hint="默认 30，范围 1–1440；未命中也等待同样时长", width=8)
+        self.idle_chat_minutes.pack(fill="x", pady=(px(4), px(6)))
+        self.idle_chat_probability = LabeledEntry(
+            idle.body, "主动发言概率（%）",
+            str(round(float(self.config.bot.get("idle_chat_probability", 0.03)) * 100, 2)),
+            hint="默认 3，范围 0–100；0 为不发送", width=8)
+        self.idle_chat_probability.pack(fill="x")
+        tk.Label(idle.body,
+                 text="无人发言满设定时长后按概率判断；未命中，再等相同时长后重试。\n默认在空闲 30、60、90 分钟时判断。有人发言重新计时，成功后本轮不重复。",
+                 bg=C["card"], fg=C["muted"], font=font(7), anchor="w", justify="left",
+                 wraplength=px(420)).pack(fill="x", pady=(px(6), 0))
+        self.idle_video_enabled = ToggleRow(
+            idle.body, "优先分享哔哩哔哩视频", "命中主动发言后，优先分享主题视频并配一句自然短评。",
+            self.config.bot.get("idle_video_enabled", True))
+        self.idle_video_enabled.pack(fill="x", pady=(px(10), px(4)))
+        self.idle_video_topics = LabeledEntry(
+            idle.body, "全局默认视频主题", "，".join(self.config.bot.get("idle_video_topics", ["蔚蓝档案"])),
+            hint="每群可在「测试对象 → 编辑」单独设置；最多 10 个", width=25)
+        self.idle_video_topics.pack(fill="x", pady=(px(4), px(6)))
+        self.idle_video_probability = LabeledEntry(
+            idle.body, "命中后分享视频的概率（%）",
+            str(round(float(self.config.bot.get("idle_video_probability", 1.0)) * 100, 2)),
+            hint="默认 100，优先视频；与主动发言概率分开计算", width=8)
+        self.idle_video_probability.pack(fill="x")
+        tk.Label(idle.body, text="仅分享近 7 天可访问的视频，同群不重复。短评每条不超 15 字，\n含视频链接最多 3 个气泡；没有合适视频时发简单文字，不假装看过。",
+                 bg=C["card"], fg=C["muted"], font=font(7), anchor="w", justify="left",
+                 wraplength=px(420)).pack(fill="x", pady=(px(6), 0))
 
         timing = Card(right, padding=16, accent=C["pink"])
         timing.pack(fill="x")
@@ -478,6 +518,15 @@ class ListenReplyPage(BasePage):
         try:
             stale = max(1, min(1440, int(self.stale_minutes.get() or 10)))
             followup_timeout = max(1, min(1440, int(self.followup_timeout.get() or 5)))
+            idle_minutes = max(1, min(1440, int(self.idle_chat_minutes.get() or 30)))
+            idle_probability = float(self.idle_chat_probability.get() or 3)
+            if not math.isfinite(idle_probability):
+                raise ValueError
+            idle_probability = max(0.0, min(100.0, idle_probability))
+            video_probability = float(self.idle_video_probability.get() or 100)
+            if not math.isfinite(video_probability):
+                raise ValueError
+            video_probability = max(0.0, min(100.0, video_probability))
             probability = max(0, min(100, int(float(
                 self.group_probability_value.get() or 30
             ))))
@@ -508,6 +557,12 @@ class ListenReplyPage(BasePage):
             "group_probability_reply": self.group_probability.get(),
             "group_reply_probability": probability / 100.0,
             "followup_timeout_minutes": followup_timeout,
+            "idle_chat_enabled": self.idle_chat_enabled.get(),
+            "idle_chat_minutes": idle_minutes,
+            "idle_chat_probability": idle_probability / 100.0,
+            "idle_video_enabled": self.idle_video_enabled.get(),
+            "idle_video_topics": re.split(r"[,，\n]", self.idle_video_topics.get()),
+            "idle_video_probability": video_probability / 100.0,
             "voice_enabled": self.voice_enabled.get(),
             "voice_test_chat": self.voice_test_chat.get().strip() or "test",
             "natural_voice": self.natural_voice.get(),
