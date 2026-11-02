@@ -70,10 +70,18 @@ def main():
             {'id': 'plana', 'voice': 'zh-CN-XiaoxiaoNeural', 'rate': '-12%', 'pitch': '+1Hz', 'volume': '+0%'},
             {'id': 'custom', 'label': '自定义', 'voice': 'custom-voice', 'pitch': '+7Hz'}]}), encoding='utf-8')
         store = VoicePresetStore(path)
-        assert store.get('arona')['pitch'] == '+22Hz'
+        assert store.get('arona')['pitch'] == '+16Hz' and store.get('arona')['rate'] == '-6%'
         assert store.get('plana')['rate'] == '-12%'
         assert store.get('custom')['pitch'] == '+7Hz'
         assert not store.delete('arona')
+        path.write_text(json.dumps({'presets':[
+            {'id':'arona','label':'老师的音色名称','voice':'zh-CN-XiaoyiNeural','rate':'+2%','pitch':'+22Hz','volume':'+0%'},
+            {'id':'custom','label':'自定音色','voice':'zh-CN-XiaoyiNeural','rate':'+2%','pitch':'+22Hz','volume':'+0%'}]}),encoding='utf8')
+        store=VoicePresetStore(path)
+        assert store.get('arona')['rate']=='-6%' and store.get('arona')['label']=='老师的音色名称'
+        assert store.get('custom')['rate']=='+2%' and store.get('custom')['pitch']=='+22Hz'
+        store.upsert({**store.get('arona'),'rate':'-12%','pitch':'+8Hz'})
+        assert VoicePresetStore(path).get('arona')['rate']=='-12%', 'edited presets must not be overwritten'
     print('LINK AND VOICE TESTS PASSED')
 
 

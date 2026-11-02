@@ -265,6 +265,14 @@ def main() -> int:
         assert not adapter.ensure_chat_open('原群名'), 'open_chat success alone cannot prove identity'
     adapter.stop()
     print("WECHATAUTO ADAPTER TEST PASSED", statuses[0][0])
+    validator = WeChatAutoAdapter({}, lambda _: None)
+    with patch.object(validator, '_resolve_username', return_value=None):
+        assert not validator.validate_group_chat('missing').ok
+    with patch.object(validator, '_resolve_username', return_value='wxid_friend'):
+        assert not validator.validate_group_chat('friend').ok
+    with patch.object(validator, '_resolve_username', return_value='room-b@chatroom'):
+        assert validator.validate_group_chat('another-group').ok
+        assert validator._usernames['another-group'] == 'room-b@chatroom'
     return 0
 
 

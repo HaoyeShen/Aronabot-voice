@@ -80,7 +80,7 @@ class SettingsPage(BasePage):
         self.context_limit = LabeledEntry(grid, "上下文条数", str(self.config.bot.get("context_limit", 30)),
                                           hint="至少 20", width=8)
         self.context_limit.grid(row=0, column=0, sticky="ew", padx=(0, px(5)))
-        self.max_chars = LabeledEntry(grid, "整条最多字", str(self.config.bot.get("max_reply_chars", 23)),
+        self.max_chars = LabeledEntry(grid, "单气泡最多字", str(self.config.bot.get("max_reply_chars", 25)),
                                       width=8)
         self.max_chars.grid(row=0, column=1, sticky="ew", padx=px(5))
         self.sentence_chars = LabeledEntry(grid, "单句最多字", str(self.config.bot.get("max_sentence_chars", 23)),
@@ -89,6 +89,8 @@ class SettingsPage(BasePage):
         self.max_stickers = LabeledEntry(grid, "每条最多表情", str(self.config.bot.get("max_stickers_per_reply", 1)),
                                          width=8)
         self.max_stickers.grid(row=0, column=3, sticky="ew", padx=(px(5), 0))
+        self.bubble_limit = LabeledEntry(context.body, "一次回复最多气泡", str(self.config.bot.get('max_reply_bubbles', 20)), hint="1–30，默认 20", width=8)
+        self.bubble_limit.pack(fill='x', pady=(px(8), 0))
         grid2 = tk.Frame(context.body, bg=C["card"])
         grid2.pack(fill="x", pady=(px(8), 0))
         for i in range(3):
@@ -151,7 +153,7 @@ class SettingsPage(BasePage):
         self.self_name.pack(fill="x", pady=(px(2), px(8)))
         tk.Label(wechat.body,
                  text="程序不使用 wxauto。当前只保留本地数据库 + UIA 路线，"
-                      "只监听白名单会话；OCR/截图调用已关闭，图片通过 UIA 剪贴板发送。",
+                      "只监听白名单会话；读取微信信息时不截图或录屏，图片通过 UIA 剪贴板发送。",
                  bg=C["card"], fg=C["muted"], font=font(8), anchor="w", justify="left",
                  wraplength=px(420)).pack(fill="x")
         restart_note = tk.Label(wechat.body, text="切换适配器后需要重启机器人生效。",
@@ -159,7 +161,7 @@ class SettingsPage(BasePage):
         restart_note.pack(fill="x", pady=(px(5), 0))
         tk.Label(wechat.body,
                  text="本地数据库 + UIA（4.1.15）：读取本机微信数据库做监听，"
-                      "并在微信进程中临时激活 Qt 无障碍位用于 UIA 发送；OCR/截图已关闭。"
+                      "并在微信进程中临时激活 Qt 无障碍位用于 UIA 发送；读取微信时不截图或录屏。"
                       "仅限本人设备、本人账号使用。",
                  bg=C["card"], fg=C["muted"], font=font(7), justify="left",
                  anchor="w", wraplength=px(420)).pack(fill="x", pady=(px(3), 0))
@@ -234,7 +236,7 @@ class SettingsPage(BasePage):
         tk.Label(about.body, text=f"ARONA  v{__version__}", bg=C["sidebar"], fg="white",
                  font=display_font(11, "bold"), anchor="w").pack(fill="x")
         tk.Label(about.body,
-                 text="什亭之匣桌面助手 · 仅使用 Windows UI Automation，不含截图、录屏与 Codex 依赖。\n"
+                 text="什亭之匣桌面助手 · 微信信息通过本地数据库读取，发送使用 Windows UI Automation。\n"
                       "非腾讯官方产品。请仅对你本人有权操作的微信会话使用，并遵守平台规则。",
                  bg=C["sidebar"], fg=C["nav_text"], font=font(8), justify="left",
                  anchor="w", wraplength=px(900)).pack(fill="x", pady=(px(5), 0))
@@ -251,7 +253,8 @@ class SettingsPage(BasePage):
     def save(self) -> None:
         try:
             context_limit = max(20, min(100, int(self.context_limit.get())))
-            max_chars = max(8, min(1800, int(self.max_chars.get() or 23)))
+            max_chars = max(8, min(200, int(self.max_chars.get() or 25)))
+            bubble_limit = max(1, min(30, int(self.bubble_limit.get() or 20)))
             sentence_chars = max(8, min(80, int(self.sentence_chars.get() or 23)))
             summary_threshold = max(2000, min(50000, int(self.summary_threshold.get() or 6000)))
             summary_keep = max(4, min(60, int(self.summary_keep.get() or 12)))
@@ -269,6 +272,7 @@ class SettingsPage(BasePage):
         bot.update({
             "context_limit": context_limit,
             "max_reply_chars": max_chars,
+            "max_reply_bubbles": bubble_limit,
             "max_sentence_chars": sentence_chars,
             "context_summary_enabled": True,
             "context_summary_threshold_chars": summary_threshold,

@@ -494,7 +494,7 @@ class MainWindow:
                                     for item in outside[:3])
                 self.toast.show("未读消息中有未监听会话：" + summary,
                                 "warn", 8000)
-        if kind == "voice_test_done":
+        if kind in ("voice_test_done", "idle_video_manual_done", "web_search_test_done"):
             self.pages["listen_reply"].on_event(kind, data)
             return
         if kind == "news_test_done":

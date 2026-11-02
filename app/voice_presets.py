@@ -19,10 +19,10 @@ BUILTIN_PRESETS = [
         "id": "arona",
         "label": "阿洛娜（近似音）",
         "voice": "zh-CN-XiaoyiNeural",
-        "rate": "+2%",
-        "pitch": "+22Hz",
+        "rate": "-6%",
+        "pitch": "+16Hz",
         "volume": "+0%",
-        "description": "明亮轻盈、略带上扬的中文少女近似音；非角色原声。",
+        "description": "明亮轻盈的中文少女近似音，稍慢语速、适度音高，优先清晰咬字；非角色原声。",
         "builtin": True,
     },
     {
@@ -64,11 +64,13 @@ class VoicePresetStore:
             for builtin in BUILTIN_PRESETS:
                 current = by_id.pop(builtin["id"], builtin)
                 # Upgrade untouched old defaults, preserving edited/custom voices.
-                old = (("zh-CN-XiaoyiNeural", "+5%", "+12Hz", "+0%")
+                old = ((("zh-CN-XiaoyiNeural", "+5%", "+12Hz", "+0%"),
+                        ("zh-CN-XiaoyiNeural", "+2%", "+22Hz", "+0%"))
                        if builtin["id"] == "arona" else
-                       ("zh-CN-XiaoxiaoNeural", "-5%", "+0Hz", "+0%"))
-                if tuple(current.get(k) for k in ("voice", "rate", "pitch", "volume")) == old:
-                    current = {**current, **builtin}
+                       (("zh-CN-XiaoxiaoNeural", "-5%", "+0Hz", "+0%"),))
+                if tuple(current.get(k) for k in ("voice", "rate", "pitch", "volume")) in old:
+                    # Keep user labels/descriptions; migrate only known default tuning.
+                    current = {**current, **{k:builtin[k] for k in ("voice", "rate", "pitch", "volume")}}
                 current = {**builtin, **current, "builtin": True}
                 merged.append(current)
             for item in items:

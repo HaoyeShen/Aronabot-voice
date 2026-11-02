@@ -77,6 +77,7 @@ def test_idle_chat() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp)
         config = ConfigStore(base / 'config.json')
+        config.set_active_profile('demo-local')
         for value, expected in [('bad', .03), (None, .03), (float('nan'), .03),
                                 (float('inf'), .03), (-1, 0), (2, 1), (0, 0), (.075, .075)]:
             config.bot['idle_chat_probability'] = value
@@ -263,8 +264,14 @@ def test_idle_videos() -> None:
     import app.bilibili_video as videos
     from app.news import NewsService
     stamp = int(time.time()) - 30
-    row = {'bvid': 'BV1hb4c64EBb', 'pubdate': stamp, 'title': '主题视频', 'tag': '蔚蓝档案'}
-    detail = {'bvid': row['bvid'], 'aid': 123456, 'title': '主题视频', 'pubdate': stamp, 'state': 0}
+    assert videos._related('人工智能与计算机', {'title': '计算机毕业设计与课程'})
+    assert videos._related('AI和人工智能', {'title': 'AI agent 技术介绍'})
+    assert videos._related('AI', {'title': 'OpenAI 研究笔记'})
+    assert videos._related('蔚蓝档案', {'title': 'BlueArchive'})
+    assert not videos._related('AI', {'title': 'daily holiday music'})
+    assert not videos._related('人工智能与计算机', {'title': '猫咪散步日常'})
+    row = {'bvid': 'BV1hb4c64EBb', 'pubdate': stamp, 'title': '蔚蓝档案游戏攻略', 'tag': '蔚蓝档案'}
+    detail = {'bvid': row['bvid'], 'aid': 123456, 'title': row['title'], 'pubdate': stamp, 'state': 0}
     video = videos.Video(row['bvid'], detail['aid'], detail['title'], '蔚蓝档案', stamp,
                          'https://b23.tv/Abc1234')
     def api(path, params, **kwargs):
@@ -277,21 +284,35 @@ def test_idle_videos() -> None:
         base = Path(tmp)
         store = videos.BilibiliVideoStore(base/'videos.json')
         with patch.object(videos, '_api_json', side_effect=api), \
-                patch.object(videos, '_verified_short_link', return_value=video.url):
+                patch.object(videos, '_verified_video_link', return_value=video.url):
             assert store.pick(['蔚蓝档案'], 'test') == video
             assert not store.state_path.exists(), 'selection must not mark a failed/cancelled send'
             store.mark_sent('test', video)
             assert not store.pick(['蔚蓝档案'], 'test')
             assert store.pick(['蔚蓝档案'], 'another') == video
             assert not videos.BilibiliVideoStore(store.state_path).pick(['蔚蓝档案'], 'test')
-        for bad_row in ({**row, 'tag': '其他主题'}, {**row, 'pubdate': 0},
+        for bad_row in ({**row, 'title': '无关日常', 'tag': '蔚蓝档案'}, {**row, 'pubdate': 0},
                         {**row, 'pubdate': stamp-8*86400}, {**row, 'pubdate': stamp+3600},
                         {**row, 'is_pay': 1}, {**row, 'bvid': 'https://evil.example/'}):
             isolated = videos.BilibiliVideoStore(base/'none.json')
             with patch.object(videos, '_api_json', return_value={'result': [bad_row]}) as request:
                 assert not isolated.pick(['蔚蓝档案'], 'test') and request.call_count == 1
         with patch.object(videos, '_api_json', side_effect=OSError('offline')):
-            assert not videos.BilibiliVideoStore(base/'none.json').pick(['蔚蓝档案'], 'test')
+            failed = videos.BilibiliVideoStore(base/'none.json')
+            assert not failed.pick(['蔚蓝档案'], 'test')
+            assert '接口暂时不可用' in failed.miss_message()
+        # A failed/empty first topic must not suppress the other configured topic.
+        keywords = []
+        def alternate(path, params, **kwargs):
+            if path.endswith('/type'):
+                keywords.append(params['keyword'])
+                return {'result': [] if params['keyword'] == '空主题' else [{**row, 'title': 'Python 入门', 'tag': 'Python'}]}
+            return {**detail, 'title': 'Python 入门'}
+        with patch.object(videos, '_api_json', side_effect=alternate), \
+                patch.object(videos, '_verified_video_link', return_value=video.url), \
+                patch.object(videos.random, 'sample', side_effect=lambda values, size: list(values)):
+            assert videos.BilibiliVideoStore(base/'alternate.json').pick(['空主题', 'Python'], 'group-b').topic == 'Python'
+            assert keywords == ['空主题', 'Python']
         with patch.object(videos, '_api_json', side_effect=[{'result':[row]}, {**detail, 'state':-4}]):
             assert not videos.BilibiliVideoStore(base/'none.json').pick(['蔚蓝档案'], 'test')
         # Official short links must redirect to exactly the verified BV or AV.
@@ -311,6 +332,10 @@ def test_idle_videos() -> None:
         with patch.object(videos, '_api_json', return_value={'content':video.url+'longer'}):
             assert not videos._verified_short_link(video), 'never truncate a long URL'
 
+        # Both automatic and manual sharing must preserve a full official URL
+        # in one bubble even though it exceeds the ordinary text limit.
+        from dataclasses import replace
+        video = replace(video, url=f'https://www.bilibili.com/zh-Hans/video/{video.bvid}/')
         config = ConfigStore(base/'config.json')
         assert config.bot['idle_video_topics'] == ['蔚蓝档案']
         config.bot['idle_video_topics'] = '蔚蓝档案，Python\nPython'
@@ -345,16 +370,16 @@ def test_idle_videos() -> None:
                     patch.object(service_module, 'make_client') as factory:
                 for raw, count in [('这个主题挺有意思。', 1),
                                    ('这个标题有点反差。新角色真可爱。', 2),
-                                   ('有点意思。标题挺特别。还真有点好奇呢。', 1),
-                                   ('这是一条非常非常长且不能随意切断的评论。', 1),
-                                   ('我刚看完，剪辑非常棒。', 1), ('这个主题真的很', 1)]:
+                                   ('有点意思。标题挺特别。还真有点好奇呢。', 0),
+                                   ('这是一条非常非常长且不能随意切断的评论。', 0),
+                                   ('我刚看完，剪辑非常棒。', 0), ('这个主题真的很', 0)]:
                     factory.return_value.chat.return_value = LLMResult(raw, 'fixture', 'openai', 1)
                     comments = service._idle_video_comments(video, service.personas.get('arona'), 'test')
                     assert len(comments) == count and all(0 < len(s) <= 15 for s in comments)
                     if raw.startswith(('我刚看完', '这是一条', '这个主题真的很', '有点意思。标题')):
-                        assert comments == ['有点意思呢。'], 'unusable comments must not be clipped or fabricated'
+                        assert comments == [], 'unusable comments must not be clipped or fabricated'
                 factory.return_value.chat.side_effect = OSError('offline')
-                assert service._idle_video_comments(video, service.personas.get('arona'), 'test') == ['有点意思呢。']
+                assert service._idle_video_comments(video, service.personas.get('arona'), 'test') == []
             with patch.object(service.idle_videos, 'pick', return_value=video) as pick, \
                     patch.object(service.idle_videos, 'mark_sent') as mark:
                 # Ordinary replies and news must never request videos.
@@ -384,6 +409,8 @@ def test_idle_videos() -> None:
                 assert len(adapter.sent) == 2 and len(adapter.sent[1][1]) <= 15
                 mark.assert_called_once_with('test', video)
                 assert memory.recent('test')[-1]['meta']['video']['bvid'] == video.bvid
+                remembered = memory.recent('test')[-1]['content']
+                assert video.title in remembered and video.url in remembered and adapter.sent[1][1] in remembered
                 service._idle_tick()
                 assert len(adapter.sent) == 2
                 # Missing results gracefully become a short greeting, not a fabricated link.
@@ -448,6 +475,128 @@ def test_idle_videos() -> None:
             service.stop(); memory.close(); training.close()
 
 
+def test_manual_idle_video() -> None:
+    from app.bilibili_video import BilibiliVideoStore, Video
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        config = ConfigStore(base/'config.json')
+        assert config.bot['idle_video_manual_chat'] == 'test'
+        config.bot['idle_video_manual_chat'] = '  '
+        config.save()
+        assert ConfigStore(config.path).bot['idle_video_manual_chat'] == 'test'
+        config.set_active_profile('demo-local')
+        config.add_target('test', 'group', 'plana')
+        config.add_target('friend', 'friend', 'arona')
+        config.target_by_name('test')['idle_video_topics'] = ['Python']
+        config.bot.update(auto_reply=False, idle_chat_enabled=False, idle_video_enabled=False,
+                          idle_chat_probability=0, idle_video_probability=0, replace_punctuation=True)
+        memory = MemoryStore(base/'memory.db')
+        training = TrainingStore(base/'training.db', base/'files')
+        service = BotService(config, PersonaStore(base/'personas.json'), StickerStore(base/'stickers.json'),
+                             memory, training, admin_state_path=base/'admin.json')
+        service.idle_videos = BilibiliVideoStore(base/'videos.json')
+        adapter = FakeAdapter(config, service._on_incoming)
+        service._adapter, service._running = adapter, True
+        service._sync_idle_groups(adapter)
+        video = Video('BV1hb4c64EBb', 123456, 'Python 示例', 'Python', int(time.time())-60,
+                      'https://www.bilibili.com/zh-Hans/video/BV1hb4c64EBb/')
+        try:
+            with patch.object(service.idle_videos, 'pick', return_value=video) as pick, \
+                    patch.object(service.idle_videos, 'mark_sent', wraps=service.idle_videos.mark_sent) as mark:
+                assert not service.send_manual_idle_video('')['ok']
+                assert not service.send_manual_idle_video('friend')['ok']
+                with patch.object(adapter, 'connected', False):
+                    assert not service.send_manual_idle_video('test')['ok']
+                pick.assert_not_called()
+                service._idle_tick_lock.acquire()
+                try:
+                    assert not service.send_manual_idle_video('test')['ok']
+                    assert service._idle_tick_lock.locked()
+                    pick.assert_not_called()
+                finally:
+                    service._idle_tick_lock.release()
+                with patch.object(adapter, 'canonical_chat', side_effect=lambda name: 'test' if name == 'alias' else name):
+                    result = service.send_manual_idle_video('alias')
+                assert result['ok'] and result['sent'] and not result['partial']
+                pick.assert_called_once_with(['Python'], 'test')
+                mark.assert_called_once_with('test', video)
+                assert adapter.sent[0] == ('test', video.url)
+                assert 2 <= len(result['bubbles']) <= 3 and all(len(s) <= 15 for s in result['bubbles'][1:])
+                assert all(chat == 'test' for chat, text in adapter.sent)
+                assert service._idle_chats['test']['sent']
+                meta = memory.recent('test')[-1]['meta']
+                assert meta['manual'] and meta['video']['bvid'] == video.bvid
+                assert video.title in memory.recent('test')[-1]['content'] and video.url in memory.recent('test')[-1]['content']
+                assert video.bvid in BilibiliVideoStore(base/'videos.json')._sent['test']
+                mark.reset_mock(); adapter.sent.clear()
+                with patch.object(service.idle_videos, 'pick', return_value=None):
+                    assert not service.send_manual_idle_video('test')['ok']
+                assert not adapter.sent
+                with patch.object(adapter, 'send_text', return_value=SendResult(False, 'offline')):
+                    assert not service.send_manual_idle_video('test')['sent']
+                mark.assert_not_called()
+                with patch.object(adapter, 'send_text', side_effect=[SendResult(True), SendResult(False, 'offline')]):
+                    result = service.send_manual_idle_video('test')
+                assert not result['ok'] and result['partial'] and result['sent']
+                assert result['bubbles'] == [video.url]
+                assert memory.recent('test')[-1]['meta']['bubbles'] == [video.url]
+                mark.assert_called_once_with('test', video)
+                mark.reset_mock()
+                def stopped(*args):
+                    service._running = False
+                    return video
+                with patch.object(service.idle_videos, 'pick', side_effect=stopped):
+                    assert not service.send_manual_idle_video('test')['ok']
+                service._running = True
+                assert not adapter.sent
+                def changed(*args):
+                    config.target_by_name('test')['idle_video_topics'] = ['changed']
+                    return ['有点意思。']
+                with patch.object(service, '_idle_video_comments', side_effect=changed):
+                    assert not service.send_manual_idle_video('test')['ok']
+                assert not adapter.sent
+                mark.assert_not_called()
+                config.target_by_name('test')['idle_video_topics'] = ['Python']
+                with patch.object(memory, 'add_assistant', side_effect=OSError('offline')):
+                    assert service.send_manual_idle_video('test')['ok']
+                mark.assert_called_once_with('test', video)
+            with patch.object(service.idle_videos, 'pick', side_effect=RuntimeError('offline')):
+                assert not service.send_manual_idle_video('test')['ok']
+            assert not service._idle_tick_lock.locked()
+            with patch.object(adapter, 'validate_group_chat', return_value=SendResult(False, '群名无法识别')), \
+                    patch.object(service.idle_videos, 'pick') as search:
+                result = service.send_manual_idle_video('test')
+                assert not result['ok'] and '群名无法识别' in result['message']
+                search.assert_not_called()
+            # Exercise two non-test group destinations with real topic matching
+            # and per-group dedup, using only the fake transport and fixture API.
+            import app.bilibili_video as videos
+            group_topics = {'群A': '人工智能与计算机', '群B': 'AI和人工智能'}
+            for name, topic in group_topics.items():
+                config.add_target(name, 'group', 'arona')
+                config.target_by_name(name)['idle_video_topics'] = [topic]
+            service.idle_videos = BilibiliVideoStore(base/'group-videos.json')
+            adapter.sent.clear()
+            keywords = []
+            def groups_api(path, params, **kwargs):
+                if path.endswith('/type'):
+                    keywords.append(params['keyword'])
+                    return {'result': [{'bvid': video.bvid, 'aid': video.aid, 'title': '计算机与 AI 介绍',
+                                        'tag': '人工智能', 'pubdate': video.published_at}]}
+                return {'bvid': video.bvid, 'aid': video.aid, 'title': '计算机与 AI 介绍',
+                        'pubdate': video.published_at, 'state': 0}
+            with patch.object(videos, '_api_json', side_effect=groups_api), \
+                    patch.object(videos, '_verified_video_link', return_value=video.url):
+                for name in group_topics:
+                    assert service.send_manual_idle_video(name)['ok']
+                assert not service.send_manual_idle_video('群A')['ok']
+            assert keywords == list(group_topics.values())
+            assert [chat for chat, text in adapter.sent if text == video.url] == ['群A', '群B']
+            assert service.idle_videos._sent['群A'] == {video.bvid} == service.idle_videos._sent['群B']
+        finally:
+            service.stop(); memory.close(); training.close()
+
+
 def test_discussion() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp)
@@ -500,6 +649,30 @@ def test_discussion() -> None:
                 assert service._group_audience(turn('unknown'),discussion=True) == 'ALL'
                 factory.return_value.chat.return_value = LLMResult('OTHER','fixture','openai',1)
                 assert service._group_audience(turn('private'),discussion=True) == 'OTHER'
+            with patch.object(config,'active_profile',return_value={**profile,'timeout':300}), \
+                    patch.object(service_module,'make_client') as factory:
+                factory.return_value.chat.return_value = LLMResult('ALL。','fixture','openai',1)
+                with patch.object(service,'_record_usage',side_effect=OSError('stats offline')):
+                    assert service._group_audience(turn('stats')) == 'ALL'
+                params=factory.call_args.args[0]
+                assert params['timeout']==45 and params['max_tokens']==64 and params['think'] is False
+                factory.reset_mock()
+                assert service._group_audience(turn('public',text='大家早上好'))=='ALL'
+                factory.assert_not_called()
+                factory.return_value.chat.side_effect=service_module.ModelError('模型返回了空回复。','empty content')
+                with patch.object(service_module.time,'monotonic',return_value=100):
+                    assert service._group_audience(turn('error'))=='UNKNOWN'
+                factory.reset_mock()
+                with patch.object(service_module.time,'monotonic',return_value=110):
+                    assert service._group_audience(turn('backoff'))=='UNKNOWN'
+                    assert service._group_audience(turn('public2',text='大家早上好'))=='ALL'
+                    assert service._group_audience(turn('direct-other',text='@张三 帮我看看'))=='OTHER'
+                    factory.assert_not_called()
+                factory.return_value.chat.side_effect=None
+                factory.return_value.chat.return_value=LLMResult('ALL','fixture','openai',1)
+                with patch.object(service_module.time,'monotonic',return_value=130):
+                    assert service._group_audience(turn('recovered'))=='ALL'
+                assert factory.call_count==1
             with patch.object(service_module,'make_client') as factory:
                 factory.return_value.chat.return_value = LLMResult('这个机制挺有趣的。','fixture','mock',1)
                 with patch.object(service.idle_videos,'pick') as video:
@@ -517,6 +690,7 @@ def main() -> int:
     test_discussion()
     test_idle_chat()
     test_idle_videos()
+    test_manual_idle_video()
     original_build = service_module.build_adapter
     service_module.build_adapter = lambda backend, config, on_message, on_status=None: FakeAdapter(
         config, on_message, on_status
@@ -525,6 +699,7 @@ def main() -> int:
         config = ConfigStore(Path(tmp) / "config.json")
         config.set_active_profile("demo-local")
         config.bot.update({"reply_delay_min": 0.0, "reply_delay_max": 0.0,
+                           "max_reply_chars": 23, "max_sentence_chars": 23,
                            "per_chat_cooldown": 0.0, "global_cooldown": 0.0,
                            "sticker_probability": 1.0, "auto_sticker": True,
                            "context_limit": 30, "auto_reply": True,
@@ -666,19 +841,44 @@ def main() -> int:
                         raise value
                     return LLMResult(value, "test", "mock", 1)
 
-            def check_reply(replies, expected):
+            fallback_outputs = []
+            def check_reply(replies, expected=None):
                 before = len(adapter.sent)
                 with patch.object(service_module, "make_client", return_value=Client(replies)):
                     service._generate_and_send(incoming, group_target, 1, "帮帮我", force_reply=True)
-                assert [text for _, text in adapter.sent[before:]] == expected
+                sent = [text for _, text in adapter.sent[before:]]
+                if expected is None:
+                    assert len(sent) == 1 and 0 < len(sent[0]) <= 23
+                    assert '抱歉' not in sent[0] and '答不上来' not in sent[0]
+                    assert not service._looks_incomplete_reply(sent[0])
+                    fallback_outputs.extend(sent)
+                else:
+                    assert sent == expected
 
             long_sentence = "这是一句没有合适断句位置而且长度明显超过限制的回答需要完整处理"
-            check_reply([long_sentence, RuntimeError("rewrite failed")], ["抱歉，我现在答不上来。"])
-            check_reply([long_sentence, ""], ["抱歉，我现在答不上来。"])
+            config.bot['replace_punctuation'] = True
+            check_reply(['第一句话完整自然，继续往下说。第二句话也完整自然，结束啦。'],
+                        ['第一句话完整自然 继续往下说', '第二句话也完整自然 结束啦'])
+            config.bot['replace_punctuation'] = False
+            long_parts = service._split_reply_messages(long_sentence, [], False, 23, 23)
+            assert ''.join(long_parts) == long_sentence + '。' and all(len(s) <= 23 for s in long_parts)
+            check_reply([long_sentence, RuntimeError("rewrite failed")], long_parts)
+            check_reply([long_sentence, ""], long_parts)
             check_reply(["第一句话是完整的。第二句话也是完整的。第三句话也完整。", ""],
                         ["第一句话是完整的。", "第二句话也是完整的。", "第三句话也完整。"])
-            check_reply([RuntimeError("model failed")], ["抱歉，我现在答不上来。"])
-            check_reply(["", ""], ["抱歉，我现在答不上来。"])
+            check_reply([RuntimeError("model failed")])
+            check_reply([RuntimeError("model failed")])
+            check_reply(["", ""])
+            assert len(set(fallback_outputs)) >= 2, 'fallback wording must vary'
+            before = len(adapter.sent)
+            with patch.object(service_module, 'make_client', return_value=Client([RuntimeError('offline')])):
+                service._generate_and_send(incoming, group_target, 1, '帮帮我', force_reply=False)
+            assert len(adapter.sent) == before + 1, 'eligible ordinary replies also get a fallback'
+            assert 0 < len(adapter.sent[-1][1]) <= 23 and '抱歉' not in adapter.sent[-1][1]
+            before = len(adapter.sent)
+            with patch.object(service_module, 'make_client', side_effect=RuntimeError('client initialization failed')):
+                service._generate_and_send(incoming, group_target, 1, '帮帮我', force_reply=False)
+            assert len(adapter.sent) == before + 1, 'client initialization errors also need a complete fallback'
 
             # Third-person public discussion is eligible, but not a forced keyword call.
             config.bot.update(trigger_enabled=True, trigger_semantic_check=True,
@@ -785,6 +985,16 @@ def main() -> int:
 
             # Test news uses the named group independently of scheduling, and
             # cancels a slow collection if connection changes before sending.
+            def cancelled_voice(*args, **kwargs):
+                service._running = False
+                return False
+            try:
+                with patch.object(service, '_send_voice_reply', side_effect=cancelled_voice), \
+                        patch.object(adapter, 'send_text') as send:
+                    assert not service.send_test_voice('test')['ok']
+                    send.assert_not_called()
+            finally:
+                service._running = True
             assert not service.send_test_news('')['ok']
             with patch.object(adapter, 'connected', False):
                 assert not service.send_test_news('test')['ok']
@@ -820,6 +1030,7 @@ def main() -> int:
                     patch('wecvoice_auto.config.Config.load', return_value=voice_config), \
                     patch('wecvoice_auto.VoiceSender') as factory:
                 service._voice_sender = None
+                factory.return_value.config = voice_config
                 factory.return_value.send.side_effect = lambda *args, **kwargs: (
                     spoken if adapter._ui_lock._is_owned() else None)
                 custom = service.voice_presets.get('plana')
@@ -827,11 +1038,20 @@ def main() -> int:
                 kwargs = factory.return_value.send.call_args.kwargs
                 assert all(kwargs[key] == custom[key] for key in ('voice', 'rate', 'pitch', 'volume'))
                 assert kwargs['chat'] == 'test'
-                assert voice_config.tail_seconds == 1.3 and voice_config.verify_chat
+                assert voice_config.tail_seconds == 2.0 and voice_config.verify_chat
+                assert voice_config.lead_seconds >= .65 and voice_config.activate_window
                 checked_window = factory.call_args.kwargs['window']
                 assert service.send_test_voice('test', preset_id='plana')['ok']
                 assert service._voice_sender.window is not checked_window
-                assert voice_config.tail_seconds == 1.3  # cached sender adds tail only once
+                assert voice_config.tail_seconds == 2.0  # cached sender adds tail only once
+                from app.character_voice import CharacterTTS
+                role = {**custom, 'engine': 'gpt_sovits'}
+                with patch.object(service.voice_presets, 'get', return_value=role):
+                    assert service.send_test_voice('test', preset_id='plana')['ok']
+                    assert isinstance(service._voice_sender.tts.backend, CharacterTTS)
+                with patch.object(service.voice_presets, 'get', return_value={**custom, 'engine': 'edge'}):
+                    assert service.send_test_voice('test', preset_id='plana')['ok']
+                    assert not isinstance(service._voice_sender.tts.backend, CharacterTTS)
                 with patch('wecvoice_auto.wechat.WeChatWindow.current_chat', return_value=''):
                     try:
                         checked_window.ensure_chat('test')
@@ -839,6 +1059,14 @@ def main() -> int:
                         pass
                     else:
                         raise AssertionError('unverified voice target must be rejected')
+                with patch.object(adapter, 'ensure_chat_open', return_value=False), \
+                        patch('wecvoice_auto.wechat.WeChatWindow.current_chat', return_value='test'):
+                    try:
+                        checked_window.ensure_chat('test')
+                    except RuntimeError:
+                        pass
+                    else:
+                        raise AssertionError('target must reopen successfully after synthesis')
                 with patch('wecvoice_auto.wechat.WeChatWindow.current_chat', return_value='群聊'), \
                         patch.object(adapter, 'is_same_chat', return_value=True) as same:
                     assert checked_window.ensure_chat('原群名') == '群聊'

@@ -62,7 +62,7 @@ class TrainingPage(BasePage):
         text.pack(side="left", fill="both", expand=True, pady=px(12))
         tk.Label(text, text="让阿洛娜记住老师给的资料", bg=C["sidebar"], fg="white",
                  font=font(11, "bold"), anchor="w").pack(fill="x")
-        tk.Label(text, text="资料只保存在本机；回复前会检索最相关的片段，"
+        tk.Label(text, text="导入文件与联网资料保存在本机；回复前检索最相关的片段，"
                            "不会把整份文件塞进模型。",
                  bg=C["sidebar"], fg=C["nav_text"], font=font(8), anchor="w").pack(fill="x")
         tk.Label(banner, text="LOCAL / RAG", bg=C["sidebar"], fg=C["cyan"],

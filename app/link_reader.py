@@ -33,12 +33,12 @@ class _Redirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def fetch_public(url: str, *, image: bool = False) -> tuple[bytes, str]:
+def fetch_public(url: str, *, image: bool = False, timeout: float = 6) -> tuple[bytes, str]:
     validate_url(url)
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 ARONA/1.2"})
     # No proxy credentials or browser cookies are inherited.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _Redirect())
-    with opener.open(request, timeout=6) as response:
+    with opener.open(request, timeout=max(1, min(6, timeout))) as response:
         kind = response.headers.get_content_type()
         allowed = kind.startswith("image/") if image else kind in ("text/html", "text/plain", "application/xhtml+xml")
         if not allowed:

@@ -93,6 +93,12 @@ def test_prompt_and_stickers() -> None:
         assert_true('【日常建议与个人看法】' in prompt and '不代表在求建议' in prompt,
                     'both prompt paths distinguish responding from invited advice')
     plana = PersonaStore().get('plana')
+    plana_prompt = build_system_prompt(plana, [], target_type='group', bot_name='ARONA')
+    plana_compact = build_compact_system_prompt(plana, [], target_type='group')
+    assert_true('账号显示名' in plana_prompt and '不要仅因昵称不同' in plana_prompt,
+                'account nickname is distinct from active persona')
+    assert_true('@ARONA' in plana_compact and '不要因此纠正身份' in plana_compact,
+                'compact prompt distinguishes account nickname')
     assert_true('【阿洛娜的知识表达】' not in build_system_prompt(plana, []), 'other personas unchanged')
     assert_true('【日常建议与个人看法】' not in build_compact_system_prompt(plana, []),
                 'Arona advice preference does not rewrite Plana')

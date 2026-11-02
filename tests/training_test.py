@@ -72,6 +72,18 @@ def main() -> int:
 
         assert_true(store.delete_document(first["doc_id"]), "delete document")
         assert_true(store.stats()["docs"] == 0, "document removed")
+        body = 'Python 装饰器可包装函数并扩展行为，调用方式保持原样。' * 10
+        web = store.add_web_page('https://docs.python.org/3/glossary.html', '装饰器说明', body,
+                                 '2026-11-02T20:00:00+08:00')
+        assert_true(web['ok'] and store.stats()['docs'] == 1, 'learn readable web source')
+        duplicate = store.add_web_page('https://docs.python.org/3/glossary.html', '装饰器说明', body)
+        assert_true(duplicate['duplicate'] and store.stats()['docs'] == 1, 'dedupe web URL/content')
+        changed = store.add_web_page('https://docs.python.org/3/glossary.html', '装饰器更新', body+' 新版本加入示例。')
+        assert_true(changed['ok'] and not changed['duplicate'] and store.stats()['docs'] == 1, 'update same web URL')
+        assert_true(store.reindex()['docs'] == 1, 'web sources survive reindex')
+        hits = store.search('Python 装饰器')
+        assert_true(hits and hits[0]['source_type'] == 'web' and hits[0]['source_url'].startswith('https://'), 'web provenance retrieval')
+        assert_true(store.delete_document(web['doc_id']) and store.stats()['docs'] == 0, 'web knowledge deletable')
         store.close()
 
     print("TRAINING TESTS PASSED")

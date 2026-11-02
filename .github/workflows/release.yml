@@ -23,7 +23,7 @@ jobs:
       - name: Full regression suite
         shell: pwsh
         run: |
-          foreach ($test in @('core_test','training_test','service_test','wechatauto_adapter_test','news_test','link_voice_test','ui_test')) {
+          foreach ($test in @('core_test','training_test','service_test','wechatauto_adapter_test','news_test','link_voice_test','character_voice_test','web_search_test','video_access_test','bubble_policy_test','proactive_model_test','proactive_article_test','ui_test')) {
             python "tests/$test.py"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }

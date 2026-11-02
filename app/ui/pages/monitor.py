@@ -93,7 +93,7 @@ class MonitorPage(BasePage):
             "db": HealthLine(health.body, "记忆数据库", "—", "SQLite"),
             "sticker": HealthLine(health.body, "表情包资源", "—", "本地文件"),
             "direction": HealthLine(health.body, "消息方向", "仅入站触发", "自己 / 手动消息不回复"),
-            "privacy": HealthLine(health.body, "隐私模式", "DB + UIA", "无截图 / 无录屏"),
+            "privacy": HealthLine(health.body, "隐私模式", "DB + UIA", "读取微信不截图 / 录屏"),
         }
         for line in self.health.values():
             line.pack(fill="x", pady=px(5))
@@ -204,7 +204,7 @@ class MonitorPage(BasePage):
                                    C["green"] if snapshot.get("stickers") else C["yellow_deep"])
         self.health["direction"].set("仅入站", "发送者与方向已标记；自己/手动消息只入上下文",
                                      C["cyan_deep"])
-        self.health["privacy"].set("DB + UIA", "无截图 / 无录屏 / 无 Codex", C["cyan_deep"])
+        self.health["privacy"].set("DB + UIA", "读取微信不截图 / 录屏", C["cyan_deep"])
         model_status = str(snapshot.get("model_status") or "")
         if model_status and model_status != "尚未检测":
             self.last_checked.configure(text="最近检查：" + model_status)

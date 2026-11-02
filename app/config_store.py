@@ -27,11 +27,12 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 def video_topics(value) -> list[str]:
     """An empty target list inherits the global topics; old configs stay valid."""
     if isinstance(value, str):
-        value = re.split(r"[,，\n]", value)
+        value = [value]
     if not isinstance(value, list):
         return []
-    return list(dict.fromkeys(str(t).strip()[:50] for t in value
-                              if isinstance(t, str) and t.strip()))[:10]
+    items = [part.strip()[:50] for text in value if isinstance(text, str)
+             for part in re.split(r'[,，;；、\n]', text) if part.strip()]
+    return list(dict.fromkeys(items))[:10]
 
 
 def _now() -> str:
@@ -143,6 +144,31 @@ class ConfigStore:
         except (TypeError, ValueError):
             admin["off_seconds"] = 3600
         bot = data.setdefault("bot", {})
+        if not bot.get('bubble_policy_version'):
+            if bot.get('max_reply_chars', 23) == 23:
+                bot['max_reply_chars'] = 25
+            if bot.get('max_sentence_chars', 23) == 23:
+                bot['max_sentence_chars'] = 25
+            bot['bubble_policy_version'] = 3
+        elif bot.get('bubble_policy_version') == 1:
+            if bot.get('max_reply_chars') == 15 and bot.get('max_sentence_chars') == 15:
+                bot['max_reply_chars'] = bot['max_sentence_chars'] = 25
+            if bot.get('max_reply_bubbles') == 10:
+                bot['max_reply_bubbles'] = 20
+            bot['bubble_policy_version'] = 3
+        elif bot.get('bubble_policy_version') == 2:
+            if bot.get('max_reply_chars') == 32 and bot.get('max_sentence_chars') == 32:
+                bot['max_reply_chars'] = bot['max_sentence_chars'] = 25
+            if bot.get('max_reply_bubbles') == 10:
+                bot['max_reply_bubbles'] = 20
+            bot['bubble_policy_version'] = 3
+        for key, default, lower, upper in (("max_reply_chars", 25, 8, 200),
+                                            ("max_sentence_chars", 25, 8, 200),
+                                            ("max_reply_bubbles", 20, 1, 30)):
+            try:
+                bot[key] = max(lower, min(upper, int(bot.get(key, default))))
+            except (ValueError, TypeError):
+                bot[key] = default
         bot["auto_start"] = bool(bot.get("auto_start", True))
         bot["group_at_always_reply"] = bool(bot.get("group_at_always_reply", True))
         bot["group_probability_reply"] = bool(bot.get("group_probability_reply", True))
@@ -154,6 +180,7 @@ class ConfigStore:
         bot["group_at_include_self_name"] = bool(bot.get("group_at_include_self_name", True))
         bot["idle_chat_enabled"] = bool(bot.get("idle_chat_enabled", True))
         bot["idle_video_enabled"] = bool(bot.get("idle_video_enabled", True))
+        bot["idle_video_manual_chat"] = str(bot.get("idle_video_manual_chat") or "test").strip() or "test"
         bot["idle_video_topics"] = video_topics(bot.get("idle_video_topics")) or ["蔚蓝档案"]
         try:
             video_probability = float(bot.get("idle_video_probability", 1.0))
@@ -183,6 +210,8 @@ class ConfigStore:
             bot["stale_reply_minutes"] = 10
         bot["quote_reply"] = bool(bot.get("quote_reply", False))
         bot["voice_enabled"] = bool(bot.get("voice_enabled", False))
+        bot["web_search_enabled"] = bool(bot.get("web_search_enabled", True))
+        bot["web_search_test_query"] = str(bot.get("web_search_test_query") or "Python 装饰器").strip()[:120] or "Python 装饰器"
         try:
             bot["voice_probability"] = max(0.0, min(1.0, float(bot.get("voice_probability", 0.5))))
         except (TypeError, ValueError):
@@ -324,9 +353,16 @@ class ConfigStore:
             training["max_chars"] = max(400, min(6000, int(training.get("max_chars", 1800))))
         except (TypeError, ValueError):
             training["max_chars"] = 1800
-        data["privacy"]["screenshots"] = False
-        data["privacy"]["screen_recording"] = False
-        data["privacy"]["mode"] = "uiautomation_only"
+        privacy = data["privacy"]
+        if privacy.get('mode') == 'uiautomation_only':
+            privacy['screenshots'] = True
+            privacy['screen_recording'] = True
+        privacy['screenshots'] = bool(privacy.get('screenshots', True))
+        privacy['screen_recording'] = bool(privacy.get('screen_recording', True))
+        privacy['wechat_read_screenshots'] = False
+        privacy['wechat_read_screen_recording'] = False
+        privacy['capture_policy_version'] = 1
+        privacy['mode'] = 'wechat_read_no_capture'
 
     def save(self) -> None:
         with self._lock:

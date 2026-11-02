@@ -68,6 +68,18 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         config = ConfigStore(Path(tmp) / "config.json")
         config.set_active_profile("demo-local")
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        probe = NewsService(config, PersonaStore(Path(tmp) / 'persona-probe.json'), state_path=Path(tmp) / 'probe.json')
+        output = '{"国服":"蔚蓝档案 国服 更新", "日服":"ブルーアーカイブ 告知", "国际服":"https://example.com/video"}'
+        with patch.object(config, 'active_profile', return_value={'provider': 'openai'}), \
+                patch('app.news.make_client') as client:
+            client.return_value.chat.return_value = SimpleNamespace(text=output)
+            terms = probe._model_search_queries()
+            assert terms == {'国服': '蔚蓝档案 国服 更新', '日服': 'ブルーアーカイブ 告知'}
+        with patch.object(config, 'active_profile', return_value={'provider': 'openai'}), \
+                patch('app.news.make_client', side_effect=RuntimeError('offline')):
+            assert probe._model_search_queries() == {}
         config.add_target("新闻群", "group", "arona")
         config.add_target("好友", "friend", "arona")
         config.data["news"] = {
@@ -169,10 +181,11 @@ def main() -> int:
         picked = service._filter_seen({'国服': [old, unknown, future, unread, fresh]}, 3, '新闻A', fixed)
         assert picked['国服'] == [fresh]
         with patch('app.news._http_json', return_value={
-                'meta': {'ok': True}, 'data': {'rows': [{'id': 123, 'title': 'イベント開催のお知らせ',
+                'meta': {'ok': True}, 'data': {'rows': [{'id': 123, 'title': 'お知らせ', 'summary':'イベント開催のお知らせ',
                 'content': '<p>新しいイベントの参加条件</p>', 'publishTime': '2026-11-02T07:00:00+08:00'}]}}):
             jp = service._official_jp(5)
             assert len(jp) == 1 and jp[0].source == '日服官网' and jp[0].body_read
+            assert jp[0].title == 'イベント開催のお知らせ', 'use the actual heading, not the category'
             assert jp[0].published_at == '2026-11-02T07:00:00'
         service._mark_seen(picked, '新闻A', fixed)
         assert not service._filter_seen({'国服': [fresh]}, 3, '新闻A', fixed)['国服']
@@ -198,6 +211,8 @@ def main() -> int:
                 patch.object(service, '_search', return_value=[candidate]) as search, \
                 patch.object(service, '_rss_search', return_value=[]), \
                 patch.object(service, '_official_jp', return_value=[]), \
+                patch.object(service, '_steam_global', return_value=[]), \
+                patch.object(service, '_official_dynamic', return_value=[]), \
                 patch.object(service, '_official_list', return_value=[]), \
                 patch('app.news.news_now', return_value=fixed), \
                 patch('app.news.read_article', return_value=('2020-01-01', 'old article text', (), candidate.title)):
@@ -206,6 +221,63 @@ def main() -> int:
             # Search/crawl recency never rescues a demonstrably old article.
             assert not service._filter_seen(collected, 3, '新闻A', fixed)['国服']
         # A stale official announcement is not forced back into the digest.
+        # Steam Community carries the publisher's announcements independently
+        # of a blocked Nexon forum; publication is posttime, never update/start.
+        epoch = int(datetime.fromisoformat('2026-11-02T07:00:00+08:00').timestamp())
+        # Use an explicit UTC+8 ISO for deterministic fixture comparisons.
+        announcement = {'clanid':45643295, 'headline':'Anniversary Login Event',
+                        'posttime':epoch, 'updatetime':epoch+10000,
+                        'body':'[p]A new login event announcement.[/p][img src="{STEAM_CLAN_IMAGE}/45643295/p.png"][/img]'}
+        event = {'appid':3557620,'gid':'123456789','published':True,'announcement_body':announcement}
+        with patch('app.news._http_json',return_value={'success':1,'events':[event]}):
+            steam = service._steam_global(5)
+            assert len(steam)==1 and steam[0].region=='国际服' and steam[0].body_read
+            assert steam[0].published_at == published_time(epoch)
+            assert 'STEAM_CLAN_IMAGE' not in steam[0].images[0]
+            assert not service._video_url(steam[0].url)
+        for bad in ({**event,'hidden':True},{**event,'appid':123},
+                    {**event,'announcement_body':{**announcement,'clanid':999}}):
+            with patch('app.news._http_json',return_value={'success':1,'events':[bad]}):
+                assert not service._steam_global(5)
+        with patch('app.news._http_json',return_value={'success':1,'events':[
+                {**event,'announcement_body':{**announcement,'posttime':epoch-10*86400,'updatetime':epoch}}]}):
+            repost=service._steam_global(5)
+            assert not service._filter_seen({'国际服':repost},2,'unseen',datetime.fromisoformat(published_time(epoch)))['国际服']
+        # Image evidence survives long article text and reaches the model prompt.
+        from app.model_client import LLMResult
+        illustrated = replace(fresh, snippet='正文内容。'*300, images=('https://example.com/news.png',))
+        with patch.object(config,'active_profile',return_value={'provider':'mock','supports_vision':True}), \
+                patch('app.news.DATA',Path(tmp)), \
+                patch('app.link_reader.fetch_public',return_value=(b'x'*2048,'utf-8')), \
+                patch('app.model_client.ModelClient') as vision:
+            vision.return_value.describe_image.return_value=LLMResult('图片确认：本次奖励为青辉石。','fixture','mock',1)
+            service._enrich_images({'国服':[illustrated]})
+        assert '[图片内容]' in illustrated.snippet
+        with patch('app.news.make_client') as model:
+            model.return_value.chat.return_value=LLMResult('素材测试','fixture','mock',1)
+            service._model_message({'国服':[illustrated],'日服':[],'国际服':[]},fixed)
+            assert '本次奖励为青辉石' in model.return_value.chat.call_args.args[0][0]['content']
+        uid=3493265644980448
+        dynamic={'type':'DYNAMIC_TYPE_DRAW','id_str':'12345678','modules':{
+            'module_author':{'mid':uid,'pub_ts':epoch},
+            'module_dynamic':{'major':{'opus':{'title':'新活动公告',
+                'summary':{'text':'蔚蓝档案公布了新活动的参与条件。'},'pics':[{'url':'https://example.com/a.png'}]}}}}}
+        with patch('app.news._http_json',return_value={'code':0,'data':{'items':[dynamic]}}):
+            posts=service._official_dynamic(uid,5)
+            assert len(posts)==1 and posts[0].body_read and posts[0].published_at==published_time(epoch)
+            assert not service._video_url(posts[0].url)
+        with patch('app.news._http_json',return_value={'code':0,'data':{'items':[{**dynamic,'type':'DYNAMIC_TYPE_AV'}]}}):
+            assert not service._official_dynamic(uid,5), 'news never fetches video posts'
+        with patch.object(service,'_official_cn',return_value=[]), \
+                patch.object(service,'_official_jp',return_value=[]), \
+                patch.object(service,'_official_list',side_effect=OSError('403')), \
+                patch.object(service,'_steam_global',return_value=steam), \
+                patch.object(service,'_official_dynamic',return_value=[]), \
+                patch.object(service,'_bilibili',return_value=[]), \
+                patch.object(service,'_search',return_value=[]), \
+                patch.object(service,'_rss_search',return_value=[]), \
+                patch('app.news.news_now',return_value=datetime.fromisoformat(published_time(epoch))+timedelta(hours=1)):
+            assert service.fetch()['国际服'], 'one blocked source must not erase a working channel'
         service.fetch = lambda: {'国服': [old], '日服': [], '国际服': []}
         notice = service.run(adapter, target=a, now=fixed)
         assert notice['sent'] and notice['no_new_items'] and '旧闻' in notice['message']

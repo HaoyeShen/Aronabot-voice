@@ -1,7 +1,7 @@
 # PyInstaller build: only explicit application resources, never local user data.
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
-datas = [('assets', 'assets')]
+datas = [('assets', 'assets'), ('scripts/character_voice_worker.py', 'scripts')]
 binaries = []
 hiddenimports = ['win32timezone']
 for package in ('wecvoice_auto', 'edge_tts', 'comtypes', 'pycaw', 'uiautomation', 'miniaudio', '_sounddevice_data'):

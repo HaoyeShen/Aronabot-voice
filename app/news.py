@@ -631,6 +631,9 @@ class NewsService:
     def _video_url(url: str) -> bool:
         parsed = urllib.parse.urlsplit(url)
         host = _domain(url)
+        if ((host == 't.bilibili.com' and re.fullmatch(r'/\d+/?', parsed.path))
+                or (host == 'bilibili.com' and re.fullmatch(r'/opus/\d+/?', parsed.path))):
+            return False
         return (any(host == domain or host.endswith('.' + domain) for domain in
                     ('youtube.com', 'youtu.be', 'v.qq.com', 'douyin.com'))
                 or parsed.path.startswith(('/video/', '/videos/', '/videos/search'))
@@ -645,7 +648,7 @@ class NewsService:
             items = []
             for row in ((payload.get('data') or {}).get('rows') or [])[:12]:
                 content = str(row.get('content') or row.get('summary') or '')
-                title = _clean(str(row.get('title') or ''))
+                title = _clean(str(row.get('summary') or row.get('title') or ''))
                 if not title:
                     continue
                 images = tuple(urllib.parse.urljoin('https://bluearchive.jp/', unescape(src))
@@ -683,6 +686,84 @@ class NewsService:
             self._source_errors.append(region + 'RSS')
             return []
 
+    def _steam_global(self, timeout: float) -> list[NewsItem]:
+        """Publisher announcements on Steam Community, independent of Nexon forum."""
+        try:
+            data = _http_json('https://store.steampowered.com/events/ajaxgetpartnereventspageable/'
+                              '?appid=3557620&offset=0&count=20&l=english', timeout)
+            if data.get('success') != 1:
+                raise ValueError('Steam 公告接口返回不可用')
+            items = []
+            for event in data.get('events') or []:
+                if (int(event.get('appid') or 0) != 3557620 or event.get('hidden')
+                        or not event.get('published') or event.get('unlisted')):
+                    continue
+                article = event.get('announcement_body') or {}
+                if article.get('hidden') or article.get('banned') or int(article.get('clanid') or 0) != 45643295:
+                    continue
+                raw = str(article.get('body') or '')
+                title = _clean(str(article.get('headline') or event.get('event_name') or ''))
+                gid = str(event.get('gid') or '')
+                if not title or not gid.isdigit():
+                    continue
+                raw = raw.replace('{STEAM_CLAN_IMAGE}', 'https://clan.akamai.steamstatic.com/images')
+                images = re.findall(r'\[img(?:\s+src=["\']([^"\']+)["\']\]|\]([^\[]+)\[/img\])', raw, re.I)
+                images = tuple(src for pair in images for src in pair if src.startswith('https://'))[:2]
+                body = re.sub(r'\[img[^\]]*\].*?\[/img\]', '', raw, flags=re.S | re.I)
+                body = _strip_html(re.sub(r'\[/?[^\]]+\]', ' ', body))
+                if not body:
+                    continue
+                if images and len(body) < 160:
+                    body += ('（图片公告：以上仅为可读文字，奖励和时间等细节需以原文为准；'
+                             '仅能确认公告发布，不能据此认定活动已经开启。）')
+                items.append(NewsItem('国际服', title[:110],
+                    'https://store.steampowered.com/news/app/3557620/view/' + gid,
+                    '国际服 Steam 社区官方公告', body[:2400], images=images,
+                    published_at=published_time(article.get('posttime')), body_read=True))
+            return items
+        except Exception as exc:
+            log.warning('Steam 社区公告暂不可用：%s', exc)
+            self._source_errors.append('Steam 社区公告')
+            return []
+
+    def _official_dynamic(self, uid: int, timeout: float) -> list[NewsItem]:
+        """Text/image posts from verified CN publisher accounts; never videos/reposts."""
+        accounts = {3493265644980448: '蔚蓝档案', 3493282386545566: '蔚蓝档案小助理'}
+        if uid not in accounts:
+            return []
+        try:
+            data = _http_json('https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space?host_mid=' + str(uid), timeout)
+            if data.get('code') != 0:
+                raise ValueError('动态接口暂不可用')
+            items = []
+            for row in (data.get('data') or {}).get('items') or []:
+                if row.get('type') not in ('DYNAMIC_TYPE_DRAW', 'DYNAMIC_TYPE_WORD'):
+                    continue
+                modules = row.get('modules') or {}
+                author = modules.get('module_author') or {}
+                if int(author.get('mid') or 0) != uid:
+                    continue
+                dynamic = modules.get('module_dynamic') or {}
+                major = dynamic.get('major') or {}
+                opus = major.get('opus') or {}
+                body = str((dynamic.get('desc') or {}).get('text') or
+                           (opus.get('summary') or {}).get('text') or '')
+                title = _clean(str(opus.get('title') or body.split('\n')[0]))
+                dynamic_id = str(row.get('id_str') or '')
+                if not body.strip() or not title or not dynamic_id.isdigit():
+                    continue
+                pics = opus.get('pics') or (major.get('draw') or {}).get('items') or []
+                images = tuple(str(p.get('url') or p.get('src') or '').replace('http://','https://',1)
+                               for p in pics[:2] if p.get('url') or p.get('src'))
+                items.append(NewsItem('国服', title[:110], 'https://t.bilibili.com/' + dynamic_id,
+                    accounts[uid] + '·官方图文动态', body[:2400], images=images,
+                    published_at=published_time(author.get('pub_ts')), body_read=True))
+            return items
+        except Exception as exc:
+            log.info('官方图文动态暂不可用 · %s · %s', accounts[uid], exc)
+            self._source_errors.append(accounts[uid] + '图文动态')
+            return []
+
     def _official_list(self, region: str, url: str, route: str, timeout: float) -> list[NewsItem]:
         try:
             parser = ArticleEvidence()
@@ -691,9 +772,44 @@ class NewsService:
             return [NewsItem(region, 'Blue Archive 官方公告', link,
                              '日服官网' if region == '日服' else 'Nexon 官方') for link in links[:6]]
         except Exception as exc:
-            log.warning('官方新闻列表不可用 · %s · %s', region, exc)
+            log.info('官方新闻列表暂不可用 · %s · %s；继续检索其他渠道', region, exc)
             self._source_errors.append(region + '官网')
             return []
+
+    def _model_search_queries(self) -> dict[str, str]:
+        """Ask the active model for public search terms; never accept URLs."""
+        profile = dict(self.config.active_profile())
+        if profile.get('provider') == 'mock':
+            return {}
+        try:
+            profile.update(timeout=min(20, max(5, int(profile.get('timeout', 20) or 20))),
+                           max_tokens=220, temperature=0, think=False)
+            result = make_client(profile).chat(
+                [{'role': 'user', 'content': f'今天是 {news_now():%Y-%m-%d}，生成近 24 小时的国服、日服、国际服新闻检索词。'}],
+                '你是蔚蓝档案新闻检索助手。仅输出 JSON 对象，键为国服、日服、国际服，'
+                '值各为一个简短搜索词，必须包含蔚蓝档案或其英文、日文名称，'
+                '优先官方公告和近期活动；不搜索视频，不输出 URL，不要虚构新闻。')
+            if self.usage_callback:
+                try:
+                    self.usage_callback(result, 'news-search')
+                except Exception:
+                    log.debug('新闻检索模型用量记录失败')
+            raw = str(result.text or '').strip().removeprefix('```json').removesuffix('```').strip()
+            obj = json.loads(raw)
+            if not isinstance(obj, dict):
+                return {}
+            queries = {}
+            for region, value in obj.items():
+                if region not in ('国服', '日服', '国际服') or not isinstance(value, str):
+                    continue
+                value = re.sub(r'\s+', ' ', value).strip()
+                if (2 <= len(value) <= 120 and not re.search(r'https?://|site:|视频|video|youtube|抖音', value, re.I)
+                        and any(term.casefold() in value.casefold() for term in RELEVANT_TERMS)):
+                    queries[region] = value
+            return queries
+        except Exception as exc:
+            log.warning('模型生成新闻检索词失败，继续使用已有公开来源：%s', type(exc).__name__)
+            return {}
 
     def fetch(self) -> dict[str, list[NewsItem]]:
         self._source_errors = []
@@ -701,6 +817,7 @@ class NewsService:
         timeout = max(5.0, min(20.0, float(settings.get("timeout", 10) or 10)))
         per_region = max(1, min(3, int(settings.get("max_items", 2) or 2)))
         fetch_limit = max(per_region, min(6, per_region * 3))
+        model_queries = self._model_search_queries()
         result: dict[str, list[NewsItem]] = {region[0]: [] for region in self.REGIONS}
         sites = {
             '国服': '蔚蓝档案 (site:taptap.cn OR site:news.17173.com OR site:3dmgame.com OR site:gamersky.com) 公告 更新',
@@ -711,8 +828,13 @@ class NewsService:
             jobs = [('国服', pool.submit(self._official_cn, timeout, 12)),
                     ('日服', pool.submit(self._official_jp, timeout)),
                     ('国际服', pool.submit(self._official_list, '国际服', 'https://forum.nexon.com/bluearchive-en/main', 'board_view?', timeout))]
+            jobs.extend([('国际服', pool.submit(self._steam_global, timeout)),
+                         ('国服', pool.submit(self._official_dynamic, 3493265644980448, timeout)),
+                         ('国服', pool.submit(self._official_dynamic, 3493282386545566, timeout))])
             for region, query, second in self.REGIONS:
                 mkt = {'国服': 'zh-CN', '日服': 'ja-JP', '国际服': 'en-US'}[region]
+                if region in model_queries:
+                    jobs.append((region, pool.submit(self._search, model_queries[region], region, mkt, timeout)))
                 jobs.extend((region, pool.submit(fn, *args)) for fn, args in (
                     (self._bilibili, (query, region, timeout, fetch_limit)),
                     (self._search, (sites[region], region, mkt, timeout)),
@@ -755,7 +877,18 @@ class NewsService:
             for item in pool.map(enrich, bounded):
                 result[item.region].append(item)
         self._fetch_report = {'sources': len(jobs), 'candidates': len(candidates),
-                              'unavailable': sorted(set(self._source_errors))}
+                              'unavailable': sorted(set(self._source_errors)),
+                              'by_region': {region: {
+                                  'candidates': sum(x.region == region for x in candidates),
+                                  'readable': sum(x.body_read for x in rows),
+                                  'dated': sum(bool(x.published_at) for x in rows),
+                                  'outside_window': sum(bool(x.published_at) and not is_recent(
+                                      x.published_at, news_now(), int(settings.get('max_age_hours',24)))
+                                      for x in candidates if x.region == region),
+                                  'unknown_date': sum(not x.published_at for x in candidates if x.region == region),
+                                  'recent': sum(is_recent(x.published_at, news_now(), int(settings.get('max_age_hours',24)))
+                                                for x in rows),
+                              } for region, rows in result.items()}}
         return result
 
     # ---------------------------------------------------------------- content
@@ -818,8 +951,9 @@ class NewsService:
                             pass
                     count += 1
                 if descriptions:
-                    item.snippet = (item.snippet + "\n[图片内容] " +
-                                    "；".join(descriptions))[:900]
+                    item.snippet = re.sub(r'（图片公告：[^）]*）', '', item.snippet)
+                    item.snippet = (item.snippet[:1200] + "\n[图片内容] " +
+                                    "；".join(descriptions))[:1700]
 
     def _persona(self) -> dict:
         return self.personas.get(self.config.data.get("active_persona_id"))
@@ -895,8 +1029,11 @@ class NewsService:
             if not grouped.get(region):
                 facts.append("- 今天暂无可靠消息")
             for item in grouped[region]:
+                image_at = item.snippet.find('[图片内容]')
+                evidence = (item.snippet[:480] + '\n' + item.snippet[image_at:][:320]
+                            if image_at >= 0 else item.snippet[:800])
                 facts.append(
-                    f"- {item.title}｜{item.snippet[:800]}｜来源：{item.source}｜发布时间：{item.published_at}"
+                    f"- {item.title}｜{evidence}｜来源：{item.source}｜发布时间：{item.published_at}"
                     + ("｜未确认" if item.uncertain else "")
                 )
         now = now or news_now()

@@ -22,13 +22,17 @@ from ...ui.widgets import (
     confirm,
 )
 from .base import BasePage
+from ...web_search import normalize_query
+from ...config_store import video_topics
 
 log = logging.getLogger(__name__)
 
 
 class VoicePresetDialog(BaseDialog):
     def __init__(self, parent, preset: dict, on_save) -> None:
-        super().__init__(parent, "编辑语音音色", "调整 Edge TTS 音色与参数",
+        character = preset.get('engine') == 'gpt_sovits'
+        super().__init__(parent, "编辑语音音色",
+                         "普拉娜本机角色模型 · 语速与音量可调" if character else "调整 Edge TTS 音色与参数",
                          width=520, height=520, icon=getattr(parent, "icon", None))
         self.preset = dict(preset)
         self.on_save = on_save
@@ -47,6 +51,9 @@ class VoicePresetDialog(BaseDialog):
         self.rate.pack(side="left", fill="x", expand=True, padx=(0, px(4)))
         self.pitch = LabeledEntry(row, "音调", preset.get("pitch", "+0Hz"), width=8)
         self.pitch.pack(side="left", fill="x", expand=True, padx=px(4))
+        if character:
+            self.voice.pack_forget()
+            self.pitch.pack_forget()
         self.volume = LabeledEntry(row, "音量", preset.get("volume", "+0%"), width=8)
         self.volume.pack(side="left", fill="x", expand=True, padx=(px(4), 0))
         self.description = LabeledEntry(
@@ -85,6 +92,8 @@ class VoicePresetDialog(BaseDialog):
             from wecvoice_auto.voices import resolve_voice
             resolve_voice(preset["voice"], rate=preset["rate"],
                           pitch=preset["pitch"], volume=preset["volume"])
+            if preset.get('engine') == 'gpt_sovits' and not -50 <= float(preset['rate'].rstrip('%')) <= 50:
+                raise ValueError('角色模型语速请设置在 -50% 到 +50% 之间')
         except Exception as exc:
             self.error.configure(text=f"参数格式不正确：{exc}")
             return
@@ -100,6 +109,11 @@ class ListenReplyPage(BasePage):
     def __init__(self, parent, app) -> None:
         super().__init__(parent, app)
         self._voice_test_busy = False
+        self._manual_video_busy = False
+        self._manual_topics_target = None
+        self._manual_topics_loaded = ()
+        self._web_test_busy = False
+        self._voice_preview_busy = False
         self._build()
 
     def _build(self) -> None:
@@ -210,38 +224,61 @@ class ListenReplyPage(BasePage):
 
         idle = Card(left, padding=16, accent=C["pink"])
         idle.pack(fill="x", pady=(px(12), 0))
-        SectionHeading(idle.body, "群聊冷场时主动发言", "偶尔出来冒个泡").pack(
+        SectionHeading(idle.body, "群聊主动分享", "由模型判断何时加入").pack(
             fill="x", pady=(0, px(8)))
         self.idle_chat_enabled = ToggleRow(
-            idle.body, "空闲时活跃气氛", "仅限已启用的群聊；遵守免打扰、自动回复和管理员暂停。",
+            idle.body, "主动活跃气氛", "仅限已启用的群聊；模型判断时机，遵守免打扰、自动回复和管理员暂停。",
             self.config.bot.get("idle_chat_enabled", True))
         self.idle_chat_enabled.pack(fill="x", pady=px(4))
         self.idle_chat_minutes = LabeledEntry(
-            idle.body, "多久无人发言（分钟）", str(self.config.bot.get("idle_chat_minutes", 30)),
-            hint="默认 30，范围 1–1440；未命中也等待同样时长", width=8)
+            idle.body, "演示模式冷场时长（分钟）", str(self.config.bot.get("idle_chat_minutes", 30)),
+            hint="仅离线演示模型使用", width=8)
         self.idle_chat_minutes.pack(fill="x", pady=(px(4), px(6)))
         self.idle_chat_probability = LabeledEntry(
-            idle.body, "主动发言概率（%）",
+            idle.body, "演示模式主动发言概率（%）",
             str(round(float(self.config.bot.get("idle_chat_probability", 0.03)) * 100, 2)),
-            hint="默认 3，范围 0–100；0 为不发送", width=8)
+            hint="仅离线演示模型使用", width=8)
         self.idle_chat_probability.pack(fill="x")
         tk.Label(idle.body,
-                 text="无人发言满设定时长后按概率判断；未命中，再等相同时长后重试。\n默认在空闲 30、60、90 分钟时判断。有人发言重新计时，成功后本轮不重复。",
+                 text="接入模型结合近期对话决定是否分享文字、视频或网页；群内有人聊天时也可分享。\n离线演示模式使用上面的固定间隔和概率。",
                  bg=C["card"], fg=C["muted"], font=font(7), anchor="w", justify="left",
                  wraplength=px(420)).pack(fill="x", pady=(px(6), 0))
         self.idle_video_enabled = ToggleRow(
-            idle.body, "优先分享哔哩哔哩视频", "命中主动发言后，优先分享主题视频并配一句自然短评。",
+            idle.body, "允许分享哔哩哔哩视频", "模型判断是否分享主题视频并撰写短评。",
             self.config.bot.get("idle_video_enabled", True))
         self.idle_video_enabled.pack(fill="x", pady=(px(10), px(4)))
         self.idle_video_topics = LabeledEntry(
-            idle.body, "全局默认视频主题", "，".join(self.config.bot.get("idle_video_topics", ["蔚蓝档案"])),
+            idle.body, "全局默认分享主题", "，".join(self.config.bot.get("idle_video_topics", ["蔚蓝档案"])),
             hint="每群可在「测试对象 → 编辑」单独设置；最多 10 个", width=25)
         self.idle_video_topics.pack(fill="x", pady=(px(4), px(6)))
         self.idle_video_probability = LabeledEntry(
-            idle.body, "命中后分享视频的概率（%）",
+            idle.body, "演示模式视频分享概率（%）",
             str(round(float(self.config.bot.get("idle_video_probability", 1.0)) * 100, 2)),
-            hint="默认 100，优先视频；与主动发言概率分开计算", width=8)
+            hint="仅离线演示模型使用", width=8)
         self.idle_video_probability.pack(fill="x")
+        tk.Label(idle.body, text="手动推送目标群聊（完整群名）", bg=C["card"],
+                 fg=C["text_soft"], font=font(8, "bold"), anchor="w").pack(
+                     fill="x", pady=(px(12), px(4)))
+        self.idle_video_manual_chat = ttk.Combobox(
+            idle.body, style="Arona.TCombobox", font=font(8))
+        self.idle_video_manual_chat.pack(fill="x")
+        self.idle_video_manual_chat.set(self.config.bot.get("idle_video_manual_chat", "test"))
+        self.manual_video_topics = LabeledEntry(
+            idle.body, "所选群视频主题（本群）", "",
+            hint="留空沿用全局主题", width=25)
+        self.manual_video_topics.pack(fill="x", pady=(px(7), px(3)))
+        self.idle_video_manual_chat.bind('<<ComboboxSelected>>', lambda _: self._load_manual_video_topics(force=True))
+        self.idle_video_manual_chat.bind('<FocusOut>', lambda _: self._load_manual_video_topics())
+        self.manual_video_btn = RoundedButton(
+            idle.body, text="立即推送一条暖场视频", command=self.send_manual_idle_video,
+            style="secondary", width=196, height=32, bg=C["card"], font_size=8)
+        self.manual_video_btn.pack(anchor="w", pady=(px(7), px(4)))
+        self.manual_video_status = tk.Label(
+            idle.body, text="选群后可编辑本群主题，推送或保存时生效；各群互不影响。\n"
+                            "未配置群使用全局主题，可先在「测试对象」添加该群。手动推送不等待冷场或概率。",
+            bg=C["card"], fg=C["muted"], font=font(7), anchor="w",
+            justify="left", wraplength=px(420))
+        self.manual_video_status.pack(fill="x")
         tk.Label(idle.body, text="仅分享近 7 天可访问的视频，同群不重复。短评每条不超 15 字，\n含视频链接最多 3 个气泡；没有合适视频时发简单文字，不假装看过。",
                  bg=C["card"], fg=C["muted"], font=font(7), anchor="w", justify="left",
                  wraplength=px(420)).pack(fill="x", pady=(px(6), 0))
@@ -351,6 +388,28 @@ class ListenReplyPage(BasePage):
         )
         self.voice_test_status.pack(fill="x")
 
+        network = Card(right, padding=16)
+        network.pack(fill="x", pady=(px(12), 0))
+        SectionHeading(network.body, "联网搜索与知识积累", "陌生知识可以查，读到的资料留在本机").pack(
+            fill="x", pady=(0, px(8)))
+        self.web_search_enabled = ToggleRow(
+            network.body, "需要时联网搜索并积累知识",
+            "读取公开网页，正文与来源加入本地训练；关闭后仍保留已学资料。",
+            self.config.bot.get("web_search_enabled", True))
+        self.web_search_enabled.pack(fill="x", pady=px(4))
+        self.web_test_query = LabeledEntry(
+            network.body, "测试检索词（公开主题）", self.config.bot.get("web_search_test_query", "Python 装饰器"),
+            hint="不需要连接微信", width=26)
+        self.web_test_query.pack(fill="x", pady=(px(7), px(5)))
+        self.web_test_btn = RoundedButton(
+            network.body, text="一键测试联网搜索", command=self.test_web_search,
+            style="secondary", width=180, height=32, bg=C["card"], font_size=8)
+        self.web_test_btn.pack(anchor="w", pady=(px(4), px(5)))
+        self.web_test_status = tk.Label(
+            network.body, text="测试会读取网页并验证入库，不发送微信消息；测试不受自动搜索开关影响。",
+            bg=C["card"], fg=C["muted"], font=font(7), anchor="w", justify="left", wraplength=px(420))
+        self.web_test_status.pack(fill="x")
+
         trigger = Card(right, padding=16)
         trigger.pack(fill="x", pady=(px(12), 0))
         SectionHeading(trigger.body, "关键词触发", "没 @ 也可能是在叫她").pack(
@@ -397,10 +456,86 @@ class ListenReplyPage(BasePage):
     def on_show(self) -> None:
         self._refresh_voice_test_chats()
 
+    def test_web_search(self) -> None:
+        if self._web_test_busy:
+            return
+        query = normalize_query(self.web_test_query.get())
+        if not query:
+            self.app.toast("请填写公开主题的检索词，不要包含私人联系方式或密钥。", "warn")
+            return
+        self.config.bot['web_search_test_query'] = query
+        try:
+            self.config.save()
+        except OSError:
+            self.app.toast("无法保存测试检索词，请检查配置文件权限。", "error")
+            return
+        self._web_test_busy = True
+        self.web_test_btn.set_busy(True, "正在搜索并读取…")
+        self.web_test_status.configure(text="正在搜索、读取正文并检查知识库入库…", fg=C['cyan_deep'])
+        def worker() -> None:
+            try:
+                result = self.service.test_web_search(query)
+            except Exception as exc:
+                log.warning('联网搜索测试任务失败：%s', type(exc).__name__)
+                result = {'ok': False, 'message': '联网搜索测试未完成，请查看日志。'}
+            self.service.emit('web_search_test_done', result)
+        threading.Thread(target=worker, daemon=True).start()
+
     def _refresh_voice_test_chats(self) -> None:
         names = ["test"] + [str(t["name"]) for t in self.config.data.get("targets", [])
                             if t.get("type") == "group"]
         self.voice_test_chat.configure(values=list(dict.fromkeys(names)))
+        self.idle_video_manual_chat.configure(values=list(dict.fromkeys(names)))
+        self._load_manual_video_topics()
+
+    def _load_manual_video_topics(self, force: bool = False) -> None:
+        chat = self.idle_video_manual_chat.get().strip()
+        if (not force and chat == self._manual_topics_target
+                and tuple(video_topics(self.manual_video_topics.get())) != self._manual_topics_loaded):
+            return  # Preserve this group's unsaved edits when changing pages.
+        target = self.config.target_by_name(chat)
+        topics = video_topics((target or {}).get('idle_video_topics'))
+        self.manual_video_topics.set('，'.join(topics))
+        self.manual_video_topics.entry.configure(state='normal' if target and target.get('type') == 'group' else 'disabled')
+        self._manual_topics_target, self._manual_topics_loaded = chat, tuple(topics)
+
+    def _save_manual_video_topics(self) -> None:
+        self._load_manual_video_topics()
+        target = self.config.target_by_name(self.idle_video_manual_chat.get().strip())
+        if target and target.get('type') == 'group':
+            topics = video_topics(self.manual_video_topics.get())
+            target['idle_video_topics'] = topics
+            self._manual_topics_loaded = tuple(topics)
+
+    def send_manual_idle_video(self) -> None:
+        if self._manual_video_busy:
+            return
+        chat = self.idle_video_manual_chat.get().strip()
+        if not chat:
+            self.app.toast("请填写推送目标群聊的完整名称。", "warn")
+            return
+        self.config.bot["idle_video_manual_chat"] = chat
+        # A manual push applies the visible theme entries, so a new keyword is
+        # not silently ignored until the page's separate Save button is used.
+        self.config.bot['idle_video_topics'] = video_topics(self.idle_video_topics.get()) or ['蔚蓝档案']
+        self._save_manual_video_topics()
+        try:
+            self.config.save()
+        except OSError as exc:
+            log.warning("保存手动视频推送目标失败：%s", exc)
+            self.app.toast("无法保存推送群聊，请检查配置文件权限。", "error")
+            return
+        self._manual_video_busy = True
+        self.manual_video_btn.set_busy(True, "正在检索并推送…")
+        self.manual_video_status.configure(text=f"正在检索视频，准备向「{chat}」推送…", fg=C["cyan_deep"])
+        def worker() -> None:
+            try:
+                result = self.service.send_manual_idle_video(chat)
+            except Exception as exc:
+                log.warning("手动暖场视频任务失败：%s", exc)
+                result = {"ok": False, "message": "暖场视频推送失败，请查看运行日志。"}
+            self.service.emit("idle_video_manual_done", result)
+        threading.Thread(target=worker, daemon=True).start()
 
     def send_test_voice(self) -> None:
         if self._voice_test_busy:
@@ -434,6 +569,20 @@ class ListenReplyPage(BasePage):
         threading.Thread(target=worker, daemon=True).start()
 
     def on_event(self, kind: str, data: dict) -> None:
+        if kind == 'web_search_test_done':
+            self._web_test_busy = False
+            self.web_test_btn.set_busy(False, '一键测试联网搜索')
+            message = data.get('message') or '联网搜索测试未完成。'
+            self.web_test_status.configure(text=message, fg=C['green'] if data.get('ok') else C['red'])
+            self.app.toast(message.split('\n')[0], 'success' if data.get('ok') else 'warn')
+            return
+        if kind == "idle_video_manual_done":
+            self._manual_video_busy = False
+            self.manual_video_btn.set_busy(False, "立即推送一条暖场视频")
+            message = data.get("message") or "暖场视频未发送。"
+            self.manual_video_status.configure(text=message, fg=C["green"] if data.get("ok") else C["red"])
+            self.app.toast(message, "success" if data.get("ok") else "warn")
+            return
         if kind != "voice_test_done":
             return
         self._voice_test_busy = False
@@ -489,12 +638,18 @@ class ListenReplyPage(BasePage):
             self.app.toast("音色已删除。", "success")
 
     def preview_voice(self) -> None:
+        if self._voice_preview_busy:
+            self.app.toast("试听正在合成，请稍候。", "info")
+            return
+        self._voice_preview_busy = True
         preset = self._selected_voice_preset()
-        self.app.toast("正在合成试听语音…", "info")
+        self.app.toast("正在加载普拉娜音色并合成试听，首次加载较慢…"
+                       if preset.get('engine') == 'gpt_sovits' else "正在合成试听语音…", "info")
         def worker() -> None:
             try:
                 from wecvoice_auto import VoiceSender
-                sender = VoiceSender()
+                from ...character_voice import make_tts
+                sender = VoiceSender(tts=make_tts(preset))
                 result = sender.send(
                     "你好", preview=True,
                     voice=preset.get("voice"),
@@ -512,6 +667,8 @@ class ListenReplyPage(BasePage):
                 message = str(exc)
                 self.after(0, lambda message=message: self.app.toast(
                     "试听失败：" + message, "error"))
+            finally:
+                self._voice_preview_busy = False
         threading.Thread(target=worker, daemon=True).start()
 
     def save(self) -> None:
@@ -542,6 +699,10 @@ class ListenReplyPage(BasePage):
         except ValueError:
             self.app.toast("请检查概率、分钟数和免打扰时间格式。", "error")
             return
+        web_query = normalize_query(self.web_test_query.get() or 'Python 装饰器')
+        if not web_query:
+            self.app.toast('联网测试词请使用公开主题，不要包含私人联系方式或密钥。', 'warn')
+            return
         keywords = [line.strip() for line in
                     self.trigger_keywords.get("1.0", "end").replace("，", ",")
                     .replace("\n", ",").split(",") if line.strip()]
@@ -561,12 +722,15 @@ class ListenReplyPage(BasePage):
             "idle_chat_minutes": idle_minutes,
             "idle_chat_probability": idle_probability / 100.0,
             "idle_video_enabled": self.idle_video_enabled.get(),
+            "idle_video_manual_chat": self.idle_video_manual_chat.get().strip() or "test",
             "idle_video_topics": re.split(r"[,，\n]", self.idle_video_topics.get()),
             "idle_video_probability": video_probability / 100.0,
             "voice_enabled": self.voice_enabled.get(),
             "voice_test_chat": self.voice_test_chat.get().strip() or "test",
             "natural_voice": self.natural_voice.get(),
             "read_links": self.read_links.get(),
+            "web_search_enabled": self.web_search_enabled.get(),
+            "web_search_test_query": web_query,
             "trigger_semantic_check": self.trigger_semantic.get(),
             "voice_name": self._voice_label_map.get(
                 self.voice_preset.get(), "arona"
@@ -579,6 +743,7 @@ class ListenReplyPage(BasePage):
             "trigger_enabled": self.trigger_enabled.get(),
             "trigger_keywords": keywords or ["阿洛娜"],
         })
+        self._save_manual_video_topics()
         self.config.save()
         self.service.reload_config()
         self.status.configure(text="已保存 · " + datetime.now().strftime("%H:%M:%S"),

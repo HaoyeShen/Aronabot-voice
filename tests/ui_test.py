@@ -153,12 +153,62 @@ def main() -> int:
         assert ConfigStore(config.path).data['news']['test_chat'] == '可设置的新闻测试群'
         # The manual test stays responsive and completes after navigating away.
         reply_page = app.pages['listen_reply']
+        assert reply_page.web_search_enabled.get()
+        assert reply_page.web_test_query.get() == 'Python 装饰器'
+        reply_page.web_test_query.set('')
+        with patch.object(service, 'test_web_search') as probe:
+            reply_page.test_web_search()
+            probe.assert_not_called()
+        entered_web, release_web = threading.Event(), threading.Event()
+        def fake_web(query):
+            assert query == 'Python 装饰器'
+            entered_web.set()
+            release_web.wait(5)
+            return {'ok': True, 'message': '已读取网页并验证入库'}
+        reply_page.web_test_query.set('Python 装饰器')
+        with patch.object(service, 'test_web_search', side_effect=fake_web) as probe:
+            reply_page.test_web_search()
+            assert entered_web.wait(3) and reply_page.web_test_btn._busy
+            reply_page.test_web_search()
+            assert probe.call_count == 1
+            app.show_page('home')
+            release_web.set()
+            deadline = time.monotonic() + 5
+            while reply_page._web_test_busy and time.monotonic() < deadline:
+                root.update(); time.sleep(.02)
+            assert not reply_page._web_test_busy and not reply_page.web_test_btn._busy
+            assert reply_page.web_test_status.cget('text') == '已读取网页并验证入库'
         assert reply_page.idle_chat_enabled.get()
         assert float(reply_page.idle_chat_probability.get()) == 3
         assert reply_page.idle_chat_minutes.get() == '30'
         assert reply_page.idle_video_enabled.get()
         assert reply_page.idle_video_topics.get() == '蔚蓝档案'
         assert float(reply_page.idle_video_probability.get()) == 100
+        assert reply_page.idle_video_manual_chat.get() == 'test'
+        reply_page.idle_video_manual_chat.set('')
+        with patch.object(service, 'send_manual_idle_video') as send:
+            reply_page.send_manual_idle_video()
+            send.assert_not_called()
+        entered_video, release_video = threading.Event(), threading.Event()
+        def fake_video(chat):
+            assert chat == '可设置的视频推送群'
+            entered_video.set()
+            release_video.wait(5)
+            return {'ok': True, 'message': '视频推送已完成'}
+        reply_page.idle_video_manual_chat.set('可设置的视频推送群')
+        with patch.object(service, 'send_manual_idle_video', side_effect=fake_video) as send:
+            reply_page.send_manual_idle_video()
+            assert entered_video.wait(3) and reply_page.manual_video_btn._busy
+            reply_page.send_manual_idle_video()
+            assert send.call_count == 1
+            app.show_page('home')
+            release_video.set()
+            deadline = time.monotonic() + 5
+            while reply_page._manual_video_busy and time.monotonic() < deadline:
+                root.update(); time.sleep(.02)
+            assert not reply_page._manual_video_busy and not reply_page.manual_video_btn._busy
+            assert reply_page.manual_video_status.cget('text') == '视频推送已完成'
+        assert ConfigStore(config.path).bot['idle_video_manual_chat'] == '可设置的视频推送群'
         reply_page.idle_video_topics.set('蔚蓝档案，明日方舟,蔚蓝档案')
         reply_page.idle_video_probability.set('65')
         reply_page.idle_chat_probability.set('7.5')
@@ -168,6 +218,13 @@ def main() -> int:
         assert saved_bot['idle_chat_probability'] == .075 and saved_bot['idle_chat_minutes'] == 45
         assert saved_bot['idle_video_topics'] == ['蔚蓝档案', '明日方舟']
         assert saved_bot['idle_video_probability'] == .65
+        assert saved_bot['web_search_enabled'] and saved_bot['web_search_test_query'] == 'Python 装饰器'
+        reply_page.web_search_enabled.switch._toggle()
+        reply_page.save()
+        assert ConfigStore(config.path).bot['web_search_enabled'] is False
+        reply_page.web_search_enabled.switch._toggle()
+        reply_page.save()
+        assert ConfigStore(config.path).bot['web_search_enabled'] is True
         reply_page.idle_chat_probability.set('0')
         reply_page.save()
         assert ConfigStore(config.path).bot['idle_chat_probability'] == 0
@@ -219,6 +276,28 @@ def main() -> int:
         with patch.object(app, 'reload_listening'):
             dialog._save()
         assert ConfigStore(config.path).target_by_name('主题界面群A')['idle_video_topics'] == []
+        reply_page.idle_video_manual_chat.set('主题界面群A')
+        reply_page.idle_video_manual_chat.event_generate('<<ComboboxSelected>>')
+        assert reply_page.manual_video_topics.get() == ''
+        reply_page.manual_video_topics.set('人工智能与计算机')
+        reply_page.save()
+        assert ConfigStore(config.path).target_by_name('主题界面群A')['idle_video_topics'] == ['人工智能与计算机']
+        reply_page.idle_video_manual_chat.set('主题界面群B')
+        reply_page.idle_video_manual_chat.event_generate('<<ComboboxSelected>>')
+        assert reply_page.manual_video_topics.get() == '明日方舟'
+        reply_page.manual_video_topics.set('AI和人工智能')
+        reply_page.idle_video_topics.set('Python；计算机')
+        with patch.object(service, 'send_manual_idle_video', return_value={'ok': True, 'message': '按本群主题推送完成'}) as push:
+            reply_page.send_manual_idle_video()
+            deadline = time.monotonic() + 3
+            while reply_page._manual_video_busy and time.monotonic() < deadline:
+                root.update(); time.sleep(.02)
+            push.assert_called_once_with('主题界面群B')
+            assert not reply_page._manual_video_busy
+        saved = ConfigStore(config.path)
+        assert saved.target_by_name('主题界面群A')['idle_video_topics'] == ['人工智能与计算机']
+        assert saved.target_by_name('主题界面群B')['idle_video_topics'] == ['AI和人工智能']
+        assert saved.bot['idle_video_topics'] == ['Python', '计算机']
         sample_target = {"id": "test", "name": "文件传输助手", "type": "friend",
                          "enabled": True, "persona_id": "arona", "require_at": True,
                          "context_limit": 30, "reply_probability": 1.0, "note": ""}
@@ -256,6 +335,16 @@ def main() -> int:
             print("dialog ok:", name, dialog.winfo_reqwidth(), dialog.winfo_reqheight())
             dialog.destroy()
         root.update_idletasks()
+        role_saved = []
+        role_dialog = VoicePresetDialog(root, {
+            **service.voice_presets.get('plana'), 'engine': 'gpt_sovits',
+            'rate': '+0%', 'pitch': '+0Hz', 'volume': '+0%',
+        }, role_saved.append)
+        assert not role_dialog.voice.winfo_manager() and not role_dialog.pitch.winfo_manager()
+        role_dialog.rate.set('-6%')
+        role_dialog.save()
+        assert role_saved and role_saved[0]['engine'] == 'gpt_sovits'
+        assert role_saved[0]['rate'] == '-6%'
     except Exception:
         errors.append(traceback.format_exc())
     finally:

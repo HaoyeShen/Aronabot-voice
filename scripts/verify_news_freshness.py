@@ -15,7 +15,7 @@ from app.news_evidence import news_now
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', choices=['collect', 'tone'])
+    parser.add_argument('mode', choices=['collect', 'tone', 'render'])
     args = parser.parse_args()
     real = ConfigStore()
     # An in-memory copy: never change the account's configuration or send history.
@@ -25,6 +25,11 @@ def main():
         profile.update(supports_vision=False, timeout=45, max_tokens=1200)
     service = NewsService(local, PersonaStore())
     current = news_now()
+    if args.mode == 'render':
+        result = service.preview()
+        print('LIVE_NEWS_PREVIEW', result['message'], sep='\n', flush=True)
+        print('NO_WECHAT_MESSAGES_SENT; NO_STATE_WRITES', flush=True)
+        return 0
     if args.mode == 'collect':
         grouped = service.fetch()
         targets = service.enabled_targets()

@@ -22,8 +22,9 @@ from app.wechat_adapter import WeChatAutoAdapter, IncomingMessage
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', choices=['link', 'preview', 'voice', 'requested-voice', 'alias-identity', 'semantic', 'quote', 'news-test', 'idle-chat', 'idle-video'])
+    parser.add_argument('mode', choices=['link', 'preview', 'voice', 'requested-voice', 'alias-identity', 'semantic', 'quote', 'news-test', 'idle-chat', 'idle-video', 'manual-video', 'manual-article', 'manual-image'])
     parser.add_argument('--no-send', action='store_true')
+    parser.add_argument('--preset', default='', help='Voice preset for the test-only voice check')
     parser.add_argument('--chat-name', help='Read-only alias identity check: original group name')
     parser.add_argument('--remark', help='Read-only alias identity check: group remark')
     args = parser.parse_args()
@@ -73,11 +74,12 @@ def main():
                 training.close()
     if args.mode == 'preview':
         from app.voice_presets import VoicePresetStore
+        from app.character_voice import make_tts
         from wecvoice_auto import VoiceSender
         for item in VoicePresetStore().list()[:2]:
-            result = VoiceSender().send('你好', preview=True, **{
+            result = VoiceSender(tts=make_tts(item)).send('你好', preview=True, **{
                 k: item[k] for k in ('voice', 'rate', 'pitch', 'volume')})
-            print(json.dumps(result.to_dict(), ensure_ascii=False))
+            print(json.dumps({**result.to_dict(), 'engine': item.get('engine', 'edge')}, ensure_ascii=False))
             if not result.ok:
                 return 1
         return 0
@@ -101,6 +103,85 @@ def main():
             service._adapter = adapter
             service._running = True
             try:
+                if args.mode in ('manual-article', 'manual-image'):
+                    from unittest.mock import patch
+                    from app.proactive_share import ProactiveArticles
+                    source = config.target_by_name('test') or {}
+                    local.data['targets'] = [{**source, 'name':'test', 'type':'group', 'enabled':True}]
+                    local.bot.update(idle_chat_enabled=True, auto_reply=True, web_search_enabled=True,
+                                     quiet_hours_enabled=False, global_cooldown=0, per_chat_cooldown=0)
+                    service.proactive_articles = ProactiveArticles(base/'article-state.json')
+                    service._sync_idle_groups(adapter)
+                    user = next(iter(adapter.target_usernames()))
+                    before = adapter._last_seq(user)
+                    decision = 'IMAGE' if args.mode == 'manual-image' else 'ARTICLE'
+                    with patch.object(service, '_proactive_decision', return_value=decision):
+                        service._idle_tick()
+                    state = service._idle_chats['test']
+                    if not state['sent']:
+                        print('PUBLIC_SHARE_UNAVAILABLE_NO_MESSAGE_SENT')
+                        return 1
+                    bubbles = memory.recent('test', 1)[-1]['meta']['bubbles']
+                    assert 2 == len(bubbles) and bubbles[0].startswith(('https://', 'http://'))
+                    assert len(bubbles[1]) <= 15
+                    for _ in range(12):
+                        rows = adapter._db.get_messages(user, limit=10)
+                        matched = [row for row in rows if int(row.get('sort_seq', 0)) > before
+                                   and str(row.get('sender_username') or '') == adapter.self_wxid
+                                   and str(row.get('content') or '').strip() in bubbles]
+                        if len(matched) == len(bubbles):
+                            print('PUBLIC_SHARE_KIND', decision)
+                            print('PUBLIC_SHARE_OUTGOING_DB_CONFIRMED', True)
+                            print('PUBLIC_SHARE_DEDUP_PERSISTED', bool(service.proactive_articles.sent.get('test')))
+                            return 0
+                        time.sleep(.5)
+                    print('ARTICLE_SENT_BUT_DB_NOT_CONFIRMED')
+                    return 1
+                if args.mode == 'manual-video':
+                    from app.bilibili_video import BilibiliVideoStore, valid_video_link
+                    source = config.target_by_name('test') or {}
+                    local.data['targets'] = [{**source, 'name': 'test', 'type': 'group', 'enabled': True,
+                                              'persona_id': source.get('persona_id') or local.data.get('active_persona_id', 'arona')}]
+                    # Copy dedup history into an isolated test store; do not
+                    # overwrite another running bot's production state file.
+                    state_path = base / 'manual-video-state.json'
+                    if service.idle_videos.state_path.exists():
+                        state_path.write_bytes(service.idle_videos.state_path.read_bytes())
+                    service.idle_videos = BilibiliVideoStore(state_path)
+                    local.bot.update(idle_chat_enabled=False, idle_chat_probability=0,
+                                     idle_video_enabled=False, idle_video_probability=0)
+                    memory.add_user('test', '我喜欢蔚蓝档案的剧情和活动。', sender='测试群友')
+                    service._sync_idle_groups(adapter)
+                    user = next(iter(adapter.target_usernames()))
+                    before = adapter._last_seq(user)
+                    result = service.send_manual_idle_video('test')
+                    print('MANUAL_VIDEO_RESULT', result['ok'], result.get('partial', False), flush=True)
+                    if not result['ok']:
+                        print('MANUAL_VIDEO_REASON', result['message'])
+                        return 1
+                    bubbles = result['bubbles']
+                    assert 2 <= len(bubbles) <= 3 and valid_video_link(bubbles[0])
+                    assert all(0 < len(s) <= 15 for s in bubbles[1:])
+                    assert service._idle_chats['test']['sent']
+                    saved = memory.recent('test', 1)[-1]
+                    video = saved['meta']['video']
+                    assert video['title'] in saved['content'] and all(s in saved['content'] for s in bubbles)
+                    print('VIDEO_CONTEXT_AND_SENT_COMMENTS_VERIFIED', True)
+                    assert video['bvid'] in BilibiliVideoStore(state_path)._sent['test']
+                    for _ in range(12):
+                        rows = adapter._db.get_messages(user, limit=10)
+                        matches = [r for r in rows if int(r.get('sort_seq', 0)) > before
+                                   and str(r.get('sender_username') or '') == adapter.self_wxid
+                                   and str(r.get('content') or '').strip() in bubbles]
+                        if len(matches) == len(bubbles):
+                            print('MANUAL_VIDEO_OUTGOING_DB_CONFIRMED', True)
+                            print('MANUAL_VIDEO_DEDUP_PERSISTED', True)
+                            print('MANUAL_VIDEO_AUTOMATIC_SWITCHES_DISABLED', True)
+                            print('MANUAL_VIDEO_BUBBLE_LENGTHS', [len(s) for s in bubbles])
+                            return 0
+                        time.sleep(.5)
+                    print('MANUAL_VIDEO_SENT_BUT_DB_NOT_CONFIRMED')
+                    return 1
                 if args.mode in ('idle-chat', 'idle-video'):
                     # Isolate the forced draw and simulated silence to test only.
                     # The real configuration and every other group are untouched.
@@ -110,7 +191,7 @@ def main():
                                      idle_chat_minutes=30, auto_reply=True,
                                      idle_video_enabled=args.mode == 'idle-video',
                                      idle_video_topics=['蔚蓝档案'], idle_video_probability=1)
-                    from app.bilibili_video import BilibiliVideoStore
+                    from app.bilibili_video import BilibiliVideoStore, valid_video_link
                     service.idle_videos = BilibiliVideoStore(base / 'video-state.json')
                     service._sync_idle_groups(adapter)
                     state = service._idle_chats['test']
@@ -121,9 +202,10 @@ def main():
                     assert state['sent'], 'no idle message sent (quiet hours may be active)'
                     text = state['last_text']
                     bubbles = memory.recent('test', 1)[-1]['meta']['bubbles']
-                    assert 1 <= len(bubbles) <= 3 and all(0 < len(s) <= 23 for s in bubbles)
+                    assert 1 <= len(bubbles) <= 3 and all(s for s in bubbles)
+                    assert all(len(s) <= 23 or valid_video_link(s) for s in bubbles)
                     if args.mode == 'idle-video':
-                        assert bubbles[0].startswith('https://b23.tv/'), 'video unavailable; greeting was sent instead'
+                        assert valid_video_link(bubbles[0]), 'video unavailable; greeting was sent instead'
                         assert len(bubbles) >= 2 and all(len(s) <= 15 for s in bubbles[1:])
                     service._idle_tick()
                     for _ in range(12):
@@ -250,9 +332,22 @@ def main():
                     print('QUOTE_SENT_BUT_DB_TARGET_NOT_VERIFIED')
                     return 1
                 if args.mode == 'voice':
-                    result = service.send_test_voice('test', preset_id=str(config.bot.get('voice_name', 'arona')))
+                    user = next(iter(adapter.target_usernames()))
+                    before = adapter._last_seq(user)
+                    result = service.send_test_voice('test', preset_id=args.preset or str(config.bot.get('voice_name', 'arona')))
                     print('TEST_VOICE_RESULT', json.dumps(result, ensure_ascii=False))
-                    return 0 if result.get('ok') else 1
+                    if not result.get('ok'):
+                        return 1
+                    for _ in range(12):
+                        rows = adapter._db.get_messages(user, limit=8)
+                        if any(int(row.get('sort_seq', 0)) > before
+                               and str(row.get('sender_username') or '') == adapter.self_wxid
+                               and adapter._message_type_name(row.get('type')) == 'voice' for row in rows):
+                            print('NATIVE_VOICE_BUBBLE_DB_CONFIRMED', True)
+                            return 0
+                        time.sleep(.5)
+                    print('VOICE_SENT_BUT_DB_NOT_CONFIRMED')
+                    return 1
                 users = adapter.target_usernames()
                 user = next(iter(users))
                 selected = None

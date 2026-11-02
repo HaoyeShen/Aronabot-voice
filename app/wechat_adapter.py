@@ -143,6 +143,10 @@ class BaseWeChatAdapter:
     def is_same_chat(self, current: str, expected: str) -> bool:
         return bool(current and expected and current.strip() == expected.strip())
 
+    def validate_group_chat(self, chat: str) -> SendResult:
+        """Adapters without a contact database defer validation to sending."""
+        return SendResult(True)
+
     def _right_click_quote_message(self, chat: str, quote_text: str,
                                    quote_kind: str = "text") -> bool:
         """Right-click the specific incoming bubble that ARONA is answering."""
@@ -684,6 +688,15 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
         expected_id = self._usernames.get(expected) or self._resolve_username(expected)
         current_id = self._resolve_username(current)
         return bool(expected_id and current_id and expected_id == current_id)
+
+    def validate_group_chat(self, chat: str) -> SendResult:
+        username = self._usernames.get(chat) or self._resolve_username(chat)
+        if not username:
+            return SendResult(False, "无法唯一识别该群聊，请核对微信中实际显示的完整群名或备注。")
+        if not username.endswith('@chatroom'):
+            return SendResult(False, "目标解析为好友而非群聊，已取消推送。")
+        self._usernames[chat] = username
+        return SendResult(True)
 
     def ensure_chat_open(self, chat: str) -> bool:
         with self._ui_lock:

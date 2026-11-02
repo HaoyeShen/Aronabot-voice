@@ -22,8 +22,14 @@ data/admin_state.json
 
 data/news_state.json
 data/idle_video_state.json
+data/proactive_article_state.json
 
 data/voice_presets.json
+data/character_voice/
+/pip-build-env-*/
+/pip-ephem-wheel-cache-*/
+/pip-install-*/
+/pip-unpack-*/
 release/
 build/
 dist/

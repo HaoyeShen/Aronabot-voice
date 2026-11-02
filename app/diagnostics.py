@@ -344,16 +344,15 @@ def run_diagnostics(service, run_model: bool = True, run_chat_test: bool = False
 
     # 7. Privacy ---------------------------------------------------------
     step(7, "验证隐私模式")
-    forbidden = [name for name in ("pyautogui", "mss", "PIL.ImageGrab", "dxcam")
-                 if name in sys.modules]
-    codex = [name for name in ("codex", "openai_codex", "openai") if name in sys.modules]
-    privacy_ok = not forbidden and not codex
+    privacy = service.config.data.get('privacy', {})
+    privacy_ok = (not privacy.get('wechat_read_screenshots', False)
+                  and not privacy.get('wechat_read_screen_recording', False))
     checks.append(_check(
         "隐私与依赖边界",
         "ok" if privacy_ok else "warn",
-        "数据库监听 + Windows UI Automation · 无截图/录屏 · 无 Codex / OpenAI SDK"
-        if privacy_ok else f"检测到模块：{', '.join(forbidden + codex)}",
-        "" if privacy_ok else "请移除相关依赖后再运行，本项目不调用截屏或 Codex 库",
+        "数据库监听 + Windows UI Automation · 微信读取不截图/录屏"
+        if privacy_ok else "微信读取的截图或录屏保护未启用",
+        "" if privacy_ok else "请检查微信读取隐私设置",
     ))
 
     # 8. Model config ----------------------------------------------------
