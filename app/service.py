@@ -809,7 +809,7 @@ class BotService:
     def _followup_active(self, chat: str) -> bool:
         with self._state_lock:
             state = self._followups.get(chat)
-            if state and time.monotonic() - state["last_activity"] >= int(
+            if state and time.monotonic() >= state["last_activity"] + int(
                     self.config.bot.get("followup_timeout_minutes", 5)) * 60:
                 self._followups.pop(chat, None)
                 log.info("连续对话超时退出：%s", chat)
