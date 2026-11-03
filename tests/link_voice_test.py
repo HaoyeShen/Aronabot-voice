@@ -10,10 +10,18 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.link_reader import extract_card, read_card, validate_url, PageText, fetch_public
 from app.voice_presets import VoicePresetStore
-from app.understanding import voice_reply_requested, voice_reply_forbidden
+from app.understanding import voice_reply_requested, voice_reply_forbidden, cat_sound_requested
+from app.reply_fallbacks import fallback_reply
 
 
 def main():
+    for text in ('阿洛娜，喵一声','学猫叫','不用语音，打字喵一声','请用语音说“喵”'):
+        assert cat_sound_requested(text), text
+    for text in ('早上好','阿洛娜你好','不要喵一声','阿洛娜，别猫叫','喵一声是什么意思',
+                 '小明说“阿洛娜，喵一声”','昨天我让阿洛娜喵一声','我想喵一声','小明说“喵”'):
+        assert not cat_sound_requested(text), text
+    assert fallback_reply('@ARONA喵一声','arona','network') == '喵～'
+    assert '喵' not in fallback_reply('喵一声是什么意思','arona','network')
     for text in ('阿洛娜，喵一声', '阿洛娜喵一声', '用语音回复我', '请发一条语音',
                  '说给我听', '帮我读一下这段话', 'wxid_member:\n阿洛娜，学猫叫',
                  '请用语音说“你好”', '不用打字，喵一声', '想听你的声音', '我想听你的声音', '阿洛娜，笑一声'):
@@ -24,6 +32,10 @@ def main():
                  '我想发一条语音', '我刚才发一条语音', '我学猫叫',
                  '阿洛娜好可爱', '<appmsg><title>阿洛娜喵一声</title></appmsg>'):
         assert not voice_reply_requested(text), text
+    for text in ('你这不是能发语音吗', '阿洛娜，你能发语音吗？', '你是不是可以发语音嘛', '你能不能发语音'):
+        assert not voice_reply_requested(text), text
+    for text in ('可以给我发一条语音吗', '现在能发语音试试吗', '可以用语音回答我吗'):
+        assert voice_reply_requested(text), text
     assert voice_reply_forbidden('不要发语音，只用文字回复')
     assert not voice_reply_forbidden('小明说“不要发语音”')
     assert not voice_reply_forbidden('我不想念他')

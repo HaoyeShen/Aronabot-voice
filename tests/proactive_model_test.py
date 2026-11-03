@@ -10,6 +10,7 @@ from app.config_store import ConfigStore, PersonaStore, StickerStore
 from app.memory import MemoryStore
 from app.training import TrainingStore
 from app.service import BotService
+from app.wechat_adapter import SendResult
 from tests.service_test import FakeAdapter
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -46,9 +47,12 @@ with tempfile.TemporaryDirectory() as tmp:
             client.return_value.chat.side_effect = RuntimeError('offline')
             assert not service._approve_video(candidate, {}, 'test')
         with patch.object(config, 'active_profile', return_value={'provider':'openai'}), \
-                patch.object(service, '_proactive_decision', return_value='WAIT'):
+                patch.object(service, '_proactive_decision', return_value='WAIT') as decision:
+            service._idle_tick()
             service._idle_tick()
             assert not adapter.sent
+            assert decision.call_count == 1, 'unchanged context must not repeatedly call the model'
+        memory.add_user('test', '继续聊活动剧情吧', sender='测试甲')
         with patch.object(config, 'active_profile', return_value={'provider':'openai'}), \
                 patch.object(service, '_proactive_decision', return_value='TEXT'):
             service._idle_tick()
@@ -65,6 +69,7 @@ with tempfile.TemporaryDirectory() as tmp:
         adapter.sent.clear()
         with patch.object(config, 'active_profile', return_value={'provider':'openai'}), \
                 patch.object(service, '_proactive_decision', return_value='IMAGE'), \
+                patch('app.service.download_image', side_effect=OSError('offline')), \
                 patch.object(service.proactive_articles, 'pick_image',
                              return_value=('https://example.org/image.png', '有点意思。', page.url)), \
                 patch.object(service.proactive_articles, 'mark_sent') as mark:
@@ -72,12 +77,50 @@ with tempfile.TemporaryDirectory() as tmp:
             assert adapter.sent[0] == ('test', 'https://example.org/image.png')
             assert mark.call_count == 2
         adapter.sent.clear()
+        for decision, kind in [('IMAGE', 'image'), ('SCREENSHOT', 'webpage-screenshot')]:
+            media_path = base / (kind+'.png')
+            media_path.write_bytes(b'fixture')
+            with patch.object(config, 'active_profile', return_value={'provider':'openai'}), \
+                    patch.object(service, '_proactive_decision', return_value=decision), \
+                    patch.object(service.proactive_articles, 'pick', return_value=(page, '有点意思。')), \
+                    patch.object(service.proactive_articles, 'pick_image', return_value=('https://example.org/image.png', '有点意思。', page.url)), \
+                    patch('app.service.download_image', return_value=media_path), \
+                    patch('app.service.capture_page', return_value=media_path), \
+                    patch.object(service.proactive_articles, 'mark_sent'):
+                service._idle_tick()
+                assert adapter.files[-1] == str(media_path)
+                assert memory.recent('test')[-1]['meta']['web_media']['kind'] == kind
+                assert not media_path.exists(), 'temporary media cleaned after sending'
+            adapter.sent.clear()
+        fallback_path = base/'fallback.png'
+        fallback_path.write_bytes(b'fixture')
+        with patch.object(config, 'active_profile', return_value={'provider':'openai'}), \
+                patch.object(service, '_proactive_decision', return_value='SCREENSHOT'), \
+                patch.object(service.proactive_articles, 'pick', return_value=(page, '有点意思。')), \
+                patch('app.service.capture_page', return_value=fallback_path), \
+                patch.object(adapter, 'send_sticker', return_value=SendResult(False, 'failed')), \
+                patch.object(service.proactive_articles, 'mark_sent'):
+            service._idle_tick()
+            assert adapter.sent[0] == ('test', page.url)
+            assert 'web_media' not in memory.recent('test')[-1]['meta']
+            assert not fallback_path.exists()
+        adapter.sent.clear()
         def changed(*args):
             state['revision'] += 1
             return 'TEXT'
         with patch.object(config, 'active_profile', return_value={'provider':'openai'}), \
                 patch.object(service, '_proactive_decision', side_effect=changed):
             service._idle_tick()
+            assert not adapter.sent
+        memory.add_user('test', '换一个话题吧', sender='测试甲')
+        with patch.object(config, 'active_profile', return_value={'provider':'openai'}), \
+                patch.object(service, '_proactive_decision', return_value='ERROR') as decision:
+            service._idle_tick()
+            service._idle_tick()
+            assert decision.call_count == 1, 'model errors must back off instead of polling'
+            state['model_retry_after'] = 0
+            service._idle_tick()
+            assert decision.call_count == 2, 'a failed decision can retry after backoff'
             assert not adapter.sent
     finally:
         service.stop()

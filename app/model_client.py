@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import base64
 import io
+import fnmatch
+import ipaddress
 import json
 import logging
 import socket
@@ -21,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .secretstore import unprotect
+from .model_audit import audit, audited
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +33,54 @@ USD_CNY_RATE = 7.2
 # reply worker and the debug console otherwise compete for the same model and
 # both appear to time out.  Remote API providers stay concurrent.
 _LOCAL_CHAT_LOCK = threading.Lock()
+
+
+class _NoLookupProxyHandler(urllib.request.ProxyHandler):
+    """Preserve proxy routing without Windows' blocking reverse-DNS bypass.
+
+    urllib's registry bypass resolves both an address and FQDN for every API
+    request, before its socket timeout starts. Match literal bypass patterns
+    instead; never change the user's Windows proxy configuration.
+    """
+    def __init__(self, proxies, bypass_patterns=()):
+        self.bypass_proxies = dict(proxies)
+        self.bypass_patterns = bypass_patterns
+        super().__init__(proxies)
+
+    def proxy_open(self, req, proxy, type):
+        host = urllib.parse.urlsplit('//' + req.host).hostname or ''
+        local = host.lower() == 'localhost'
+        try:
+            local = local or ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            pass
+        if (local or urllib.request.proxy_bypass_environment(req.host, self.bypass_proxies)
+                or any((pattern.lower() == '<local>' and '.' not in host)
+                       or fnmatch.fnmatchcase(host.lower(), pattern.lower())
+                       or fnmatch.fnmatchcase(req.host.lower(), pattern.lower())
+                       for pattern in self.bypass_patterns)):
+            return None
+        original = req.type
+        proxy_type, user, password, hostport = urllib.request._parse_proxy(proxy)
+        proxy_type = proxy_type or original
+        if user and password:
+            credentials = '%s:%s' % (urllib.parse.unquote(user), urllib.parse.unquote(password))
+            req.add_header('Proxy-authorization', 'Basic ' + base64.b64encode(credentials.encode()).decode('ascii'))
+        req.set_proxy(urllib.parse.unquote(hostport), proxy_type)
+        if original != proxy_type and original != 'https':
+            return self.parent.open(req, timeout=req.timeout)
+        return None
+
+
+def _proxy_bypass_patterns():
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                           r'Software\Microsoft\Windows\CurrentVersion\Internet Settings') as key:
+            patterns = str(winreg.QueryValueEx(key, 'ProxyOverride')[0])
+        return [pattern.strip() for pattern in patterns.split(';') if pattern.strip()]
+    except (ImportError, OSError):
+        return []
 
 
 class ModelError(RuntimeError):
@@ -154,7 +205,9 @@ class ModelClient:
                 except OSError:
                     log.debug("忽略不可用的系统代理：%s=%s", scheme, value)
             if usable:
-                return urllib.request.build_opener(urllib.request.ProxyHandler(usable))
+                if configured.get('no'):
+                    usable['no'] = configured['no']
+                return urllib.request.build_opener(_NoLookupProxyHandler(usable, _proxy_bypass_patterns()))
             return urllib.request.build_opener(urllib.request.ProxyHandler({}))
         except Exception as exc:
             log.debug("读取系统代理失败，改为直连：%s", exc)
@@ -167,14 +220,24 @@ class ModelClient:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
         request = urllib.request.Request(url, data=data, method=method,
                                          headers=_headers(self.api_key))
+        if method == 'POST':
+            audit('接口输入', payload, secrets=(self.api_key,))
         try:
             with self._opener().open(request, timeout=timeout or self.timeout) as response:
                 body = response.read().decode("utf-8", "replace")
+            if method == 'POST':
+                try:
+                    audit_body = json.loads(body)
+                except (ValueError, TypeError):
+                    audit_body = body
+                audit('接口原始输出', audit_body, secrets=(self.api_key,))
             if not body.strip():
                 return {}
             return json.loads(body)
         except urllib.error.HTTPError as exc:
             detail = _read_error(exc)
+            if method == 'POST':
+                audit('接口错误输出', detail, secrets=(self.api_key,))
             if exc.code in (401, 403):
                 raise ModelError("API 鉴权失败，请检查 Key 是否正确。", detail) from exc
             if exc.code == 404:
@@ -205,6 +268,7 @@ class ModelClient:
         return openai_models_url(self.base_url)
 
     # -- Public API -------------------------------------------------------
+    @audited('模型聊天')
     def chat(self, messages: list[dict], system: str = "") -> LLMResult:
         if self.provider == "mock":
             return self._mock_chat(messages)
@@ -298,6 +362,7 @@ class ModelClient:
                 time.sleep(1.2 * attempt)
         raise last or ModelError("模型请求失败")
 
+    @audited('模型连通性测试')
     def _probe_chat(self, timeout: int = 20) -> str:
         """Make a one-token chat request to verify the model alias."""
         if self.provider == "ollama":
@@ -375,6 +440,7 @@ class ModelClient:
             "note": f"USD 按 1 USD = {USD_CNY_RATE:.2f} CNY 换算",
         }
 
+    @audited('图片理解')
     def describe_image(self, path, prompt: str = "", timeout: int = 90) -> LLMResult:
         """Ask a vision-capable model to describe a local image."""
         if not self.supports_vision:

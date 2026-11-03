@@ -16,6 +16,7 @@ from .dialogs import DiagnosticsDialog, ReplyDetailDialog
 from .pages.dashboard import DashboardPage
 from .pages.home import HomePage
 from .pages.debug import DebugPage
+from .pages.agent_chat import AgentChatPage
 from .pages.listen_reply import ListenReplyPage
 from .pages.logs import LogsPage
 from .pages.models import ModelsPage
@@ -34,6 +35,7 @@ PAGE_CLASSES = {
     "home": HomePage,
     "dashboard": DashboardPage,
     "debug": DebugPage,
+    "agent": AgentChatPage,
     "monitor": MonitorPage,
     "stickers": StickersPage,
     "targets": TargetsPage,
@@ -127,7 +129,7 @@ class MainWindow:
 
     def _configure_root(self) -> None:
         root = self.root
-        root.title("ARONA · 什亭之匣微信助手")
+        root.title("什亭之匣")
         root.configure(bg=C["bg"])
         # iconbitmap first, then iconphoto: on Windows Tk's iconbitmap sets
         # only the large/class icon, while the later iconphoto also fills the
@@ -176,7 +178,7 @@ class MainWindow:
         footer = tk.Frame(self.main, bg=C['bg_deep'], height=px(25))
         footer.grid(row=2, column=0, sticky='ew')
         footer.pack_propagate(False)
-        tk.Label(footer, text='ARONA   什亭之匣微信助手', bg=C['bg_deep'], fg=C['text_soft'],
+        tk.Label(footer, text='什亭之匣 · 微信助手', bg=C['bg_deep'], fg=C['text_soft'],
                  font=font(7)).pack(side='left', padx=px(22))
         tk.Label(footer, text=f'v{__version__}  ✦', bg=C['bg_deep'], fg=C['text_soft'],
                  font=display_font(7)).pack(side='right', padx=px(22))
@@ -353,12 +355,12 @@ class MainWindow:
                     "请依次确认：\n"
                     "1. 微信已登录，且主窗口是打开的（可按 Ctrl+Alt+W 唤出）；\n"
                     "2. 桌面未锁屏；\n"
-                    "3. 不要用管理员权限运行 ARONA，让 Python 与微信权限级别一致；\n"
+                    "3. 不要用管理员权限运行什亭之匣，让 Python 与微信权限级别一致；\n"
                     "4. 把 Python/本项目加入安全软件白名单；\n"
                     "5. 首次连接需要 10–30 秒，请稍等后重试。\n\n"
                     "可在「自动调试」查看完整报告；如果报告显示 "
-                    "「Python 运行完整性：Low」，请关闭 ARONA，"
-                    "从桌面重新双击「启动 ARONA.bat」后再试。\n\n"
+                    "「Python 运行完整性：Low」，请关闭什亭之匣，"
+                    "从桌面重新双击「启动 什亭之匣.bat」后再试。\n\n"
                     "如果仍然失败，请把日志发给我，以便继续调整。"
                 )
             else:
@@ -521,7 +523,7 @@ class MainWindow:
         if self._closing:
             return
         if self.config.ui.get("confirm_close", True) and self.service.running:
-            if not confirm(self.root, "退出 ARONA",
+            if not confirm(self.root, "退出什亭之匣",
                            "机器人正在运行。退出会停止监听，但不会删除上下文和设置。\n确定退出吗？",
                            ok_text="退出", danger=True, icon=self.icon):
                 return

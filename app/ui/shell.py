@@ -16,6 +16,7 @@ from ..ui.widgets import ImageBank, Pill, RoundedButton, _widget_bg
 NAV_ITEMS = [
     ("dashboard", "控制台", "⌂", "HOME"),
     ("debug", "自动调试", "✦", "DEBUG"),
+    ("agent", "Agent 对话", "↔", "AGENT"),
     ("monitor", "运行监控", "◉", "LIVE"),
     ("stickers", "表情包", "☺", "STICKERS"),
     ("targets", "测试对象", "◎", "TARGETS"),

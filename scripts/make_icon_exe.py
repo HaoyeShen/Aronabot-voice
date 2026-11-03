@@ -22,8 +22,8 @@ VENV = ROOT / ".venv"
 # taskbar.  A base pythonw placed inside .venv/Scripts still detects
 # .venv/pyvenv.cfg and uses the virtual environment.
 SOURCE = Path(sys.base_prefix) / "pythonw.exe"
-TARGET = VENV / "Scripts" / "ARONA.exe"
-MARKER = VENV / "Scripts" / "ARONA.iconv2"
+TARGET = VENV / "Scripts" / "什亭之匣.exe"
+MARKER = VENV / "Scripts" / "什亭之匣.iconv3"
 ICON = ROOT / "assets" / "arona_icon.ico"
 
 RT_ICON = 3

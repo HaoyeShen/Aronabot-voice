@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 import re
 
 from .prompting import address_name
+from .understanding import cat_sound_requested
 
 
 LINES = {
@@ -33,8 +34,9 @@ LINES = {
 
 
 def fallback_reply(text: str, persona_id: str, reason: str, turn: int = 0,
-                   sender: str = '', limit: int = 23) -> str:
+                   sender: str = '', limit: int = 23, *, persona: dict | None = None) -> str:
     """Choose complete sentences, never truncate a name or fabricate facts."""
+    requested_cat = cat_sound_requested(text)
     text = re.sub(r'@\S+\s*', '', text or '').strip()
     if re.search(r'(?:我|最近|今天|心情).{0,8}(?:难过|伤心|委屈|崩溃|痛苦|好累|失恋|失业|想哭|不好)|^(?:好难过|好伤心|想哭|好累)', text):
         reason = 'comfort'
@@ -44,7 +46,7 @@ def fallback_reply(text: str, persona_id: str, reason: str, turn: int = 0,
         reason = 'greeting'
     elif re.fullmatch(r'(?:这个|那个|它|这件事|那件事)(?:呢|怎么样|怎么说|怎么办)[？?。\s]*', text):
         reason = 'clarify'
-    elif re.search(r'喵一声|学猫叫', text) and not re.search(r'别|不要|不用', text):
+    elif requested_cat:
         return '喵～'
     elif re.search(r'今天(?:是)?几(?:号|月|日)|今天星期几|今天周几', text):
         now = datetime.now().astimezone()
@@ -57,19 +59,29 @@ def fallback_reply(text: str, persona_id: str, reason: str, turn: int = 0,
         try:
             a, op, b = Decimal(match[1]), match[2], Decimal(match[3])
             if op in ('/', '÷') and not b:
-                line = '老师，零不能当除数呀。' if persona_id != 'plana' else '老师，零不能作为除数。'
-                return line if len(line) <= limit else '老师，不能除零。'
+                line = '零不能作为除数。'
+                return line if len(line) <= limit else '不能除零。'
             value = a+b if op == '+' else a-b if op == '-' else a*b if op in ('*', '×') else a/b
             answer = format(value.normalize(), 'f')
             if len(answer) + 1 <= limit:
                 return answer + '。'
         except (InvalidOperation, ArithmeticError):
             pass
-    choices = LINES['plana' if persona_id == 'plana' else 'arona']
+    builtin = (persona_id in ('arona', 'plana') and
+               (persona is None or persona.get('name') in ('阿洛娜', '普拉娜')))
+    choices = LINES['plana' if persona_id == 'plana' or not builtin else 'arona']
     options = choices.get(reason, choices['unknown'])
-    for teacher in dict.fromkeys((address_name(sender), '老师')):
+    if not builtin:
+        # Without a running model, avoid inventing a custom character's title
+        # or borrowing Arona's catchphrases. An explicit template is safe.
+        names = [address_name(sender, persona)] if persona and persona.get('address_template') else ['']
+    elif persona and persona.get('address_template'):
+        names = [address_name(sender, persona), '']
+    else:
+        names = [address_name(sender), '老师']
+    for teacher in dict.fromkeys(names):
         for offset in range(len(options)):
-            line = options[(turn + offset) % len(options)].format(t=teacher)
+            line = options[(turn + offset) % len(options)].format(t=teacher).lstrip('，, ')
             if len(line) <= limit:
                 return line
-    return '老师，尚未确认。' if persona_id == 'plana' else '老师，我不会呀。'
+    return '这部分还不确定。'

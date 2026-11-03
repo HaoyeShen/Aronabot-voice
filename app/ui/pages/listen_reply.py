@@ -32,7 +32,7 @@ class VoicePresetDialog(BaseDialog):
     def __init__(self, parent, preset: dict, on_save) -> None:
         character = preset.get('engine') == 'gpt_sovits'
         super().__init__(parent, "编辑语音音色",
-                         "普拉娜本机角色模型 · 语速与音量可调" if character else "调整 Edge TTS 音色与参数",
+                         "本机角色模型 · 语速与音量可调" if character else "调整 Edge TTS 音色与参数",
                          width=520, height=520, icon=getattr(parent, "icon", None))
         self.preset = dict(preset)
         self.on_save = on_save
@@ -213,12 +213,12 @@ class ListenReplyPage(BasePage):
         )
         self.group_probability_value.pack(fill="x")
         self.followup_timeout = LabeledEntry(
-            group_frame, "@ 后续聊超时（分钟）",
+            group_frame, "唤醒后续聊超时（分钟）",
             str(self.config.bot.get("followup_timeout_minutes", 5)),
             hint="默认 5，范围 1–1440", width=8,
         )
         self.followup_timeout.pack(fill="x", pady=(px(8), 0))
-        tk.Label(group_frame, text="@ 回复后，确认仍对她说话就继续回复，无需再次 @。\n连续 5 条非对她发言或超时后退出，各群独立。",
+        tk.Label(group_frame, text="@ 回复后可续聊；Agent 开启时，直接称呼唤醒也可续聊。\n确认仍对她说话就回复，连续 5 条无关发言或超时退出，各群独立。",
                  bg=C["card"], fg=C["muted"], font=font(7), anchor="w",
                  justify="left", wraplength=px(420)).pack(fill="x", pady=(px(4), 0))
 
@@ -247,6 +247,12 @@ class ListenReplyPage(BasePage):
             idle.body, "允许分享哔哩哔哩视频", "模型判断是否分享主题视频并撰写短评。",
             self.config.bot.get("idle_video_enabled", True))
         self.idle_video_enabled.pack(fill="x", pady=(px(10), px(4)))
+        self.share_images_direct = ToggleRow(idle.body, '直接发送网页图片',
+            '通过模型审核的网页图片发送为微信图片，失败回退链接。', self.config.bot.get('share_images_direct', True))
+        self.share_images_direct.pack(fill='x', pady=px(4))
+        self.share_web_screenshots = ToggleRow(idle.body, '允许网页正文截图',
+            '仅渲染公开网页正文，不截桌面或微信；失败回退链接。', self.config.bot.get('share_web_screenshots', True))
+        self.share_web_screenshots.pack(fill='x', pady=px(4))
         self.idle_video_topics = LabeledEntry(
             idle.body, "全局默认分享主题", "，".join(self.config.bot.get("idle_video_topics", ["蔚蓝档案"])),
             hint="每群可在「测试对象 → 编辑」单独设置；最多 10 个", width=25)
@@ -397,6 +403,19 @@ class ListenReplyPage(BasePage):
             "读取公开网页，正文与来源加入本地训练；关闭后仍保留已学资料。",
             self.config.bot.get("web_search_enabled", True))
         self.web_search_enabled.pack(fill="x", pady=px(4))
+        self.agent_enabled = ToggleRow(
+            network.body, "Agent 自主使用工具",
+            "AI 功能统一由 Agent 调度并记录；此开关控制普通回复是否自主追加工具轮次，关闭后单步回答。",
+            self.config.bot.get("agent_enabled", True))
+        self.agent_enabled.pack(fill="x", pady=px(4))
+        self.agent_max_steps = LabeledEntry(
+            network.body, "最多工具轮次", str(self.config.bot.get("agent_max_steps", 4)),
+            hint="1–8，普通聊天不必调用工具", width=8)
+        self.agent_max_steps.pack(fill="x", pady=px(4))
+        self.agent_timeout = LabeledEntry(
+            network.body, "任务时间预算（秒）", str(self.config.bot.get("agent_timeout_seconds", 90)),
+            hint="10–300，超出后停止追加工具", width=8)
+        self.agent_timeout.pack(fill="x", pady=px(4))
         self.web_test_query = LabeledEntry(
             network.body, "测试检索词（公开主题）", self.config.bot.get("web_search_test_query", "Python 装饰器"),
             hint="不需要连接微信", width=26)
@@ -643,7 +662,7 @@ class ListenReplyPage(BasePage):
             return
         self._voice_preview_busy = True
         preset = self._selected_voice_preset()
-        self.app.toast("正在加载普拉娜音色并合成试听，首次加载较慢…"
+        self.app.toast("正在加载角色音色并合成试听，首次加载较慢…"
                        if preset.get('engine') == 'gpt_sovits' else "正在合成试听语音…", "info")
         def worker() -> None:
             try:
@@ -675,6 +694,8 @@ class ListenReplyPage(BasePage):
         try:
             stale = max(1, min(1440, int(self.stale_minutes.get() or 10)))
             followup_timeout = max(1, min(1440, int(self.followup_timeout.get() or 5)))
+            agent_max_steps = max(1, min(8, int(self.agent_max_steps.get() or 4)))
+            agent_timeout = max(10, min(300, int(self.agent_timeout.get() or 90)))
             idle_minutes = max(1, min(1440, int(self.idle_chat_minutes.get() or 30)))
             idle_probability = float(self.idle_chat_probability.get() or 3)
             if not math.isfinite(idle_probability):
@@ -722,6 +743,8 @@ class ListenReplyPage(BasePage):
             "idle_chat_minutes": idle_minutes,
             "idle_chat_probability": idle_probability / 100.0,
             "idle_video_enabled": self.idle_video_enabled.get(),
+            "share_images_direct": self.share_images_direct.get(),
+            "share_web_screenshots": self.share_web_screenshots.get(),
             "idle_video_manual_chat": self.idle_video_manual_chat.get().strip() or "test",
             "idle_video_topics": re.split(r"[,，\n]", self.idle_video_topics.get()),
             "idle_video_probability": video_probability / 100.0,
@@ -730,6 +753,9 @@ class ListenReplyPage(BasePage):
             "natural_voice": self.natural_voice.get(),
             "read_links": self.read_links.get(),
             "web_search_enabled": self.web_search_enabled.get(),
+            "agent_enabled": self.agent_enabled.get(),
+            "agent_max_steps": agent_max_steps,
+            "agent_timeout_seconds": agent_timeout,
             "web_search_test_query": web_query,
             "trigger_semantic_check": self.trigger_semantic.get(),
             "voice_name": self._voice_label_map.get(

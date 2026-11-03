@@ -925,6 +925,7 @@ def main() -> int:
             with patch.object(service, '_send_voice_reply', return_value=True) as voice:
                 check_reply(['我在呢，别着急。'], [])
                 assert voice.call_args.args[1] == '我在呢，别着急。'
+                assert memory.recent('测试群')[-1]['meta']['voice_sent'] is True
 
             # Explicit sound requests override automatic voice settings; the
             # selected chat, max length and text fallback remain enforced.
@@ -938,6 +939,7 @@ def main() -> int:
             with patch.object(service, '_send_voice_reply', return_value=False) as voice:
                 check_reply(['喵。'], ['喵。'])
                 voice.assert_called_once()
+                assert memory.recent('测试群')[-1]['meta']['voice_sent'] is False
             config.bot['voice_max_chars'] = 8
             with patch.object(service, '_send_voice_reply') as voice:
                 check_reply(['这是一句完整的语音回复。'], ['这是一句完整的语音回复。'])

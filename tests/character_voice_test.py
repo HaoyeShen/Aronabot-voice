@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.character_voice import CharacterTTS, CharacterVoiceClient, PaddedTTS, make_tts
 from app.voice_presets import VoicePresetStore
-from scripts.character_voice_worker import synthesize
+from scripts.character_voice_worker import synthesize, load_reference
 
 
 def main():
@@ -40,7 +40,7 @@ def main():
     client.synthesize.return_value = wav
     tts = CharacterTTS(48000, client)
     clip = tts.synthesize('你好。', SimpleNamespace(rate='-8%', volume='+10%'))
-    client.synthesize.assert_called_once_with('你好。', .92)
+    client.synthesize.assert_called_once_with('你好。', .92, character='plana')
     assert clip.sample_rate == 48000 and abs(clip.duration - .5) < .01
     assert float(abs(clip.samples).max()) <= .90001
     client.synthesize.reset_mock()
@@ -99,6 +99,60 @@ def main():
         assert VoicePresetStore(root / 'voices.json').get('plana')['engine'] == 'gpt_sovits'
         assert isinstance(make_tts(preset).backend, CharacterTTS)
         assert not isinstance(make_tts(store.get('arona')).backend, CharacterTTS)
+        arona = {**store.get('arona'), 'engine': 'gpt_sovits'}
+        assert make_tts(arona).backend.character == 'arona'
+        with patch.object(client, 'synthesize', return_value=wav) as synth:
+            CharacterTTS(client=client, character='arona').synthesize(
+                '你好。', SimpleNamespace(rate='+0%', volume='+0%'))
+            synth.assert_called_once_with('你好。', 1.0, character='arona')
+        # Separate assets and transcripts; old Plana profiles remain readable.
+        import hashlib
+        from scripts import character_voice_worker as worker
+        (root / 'profiles').mkdir()
+        for character in ('arona', 'plana'):
+            ref = root / f'{character}-reference.wav'
+            ref.write_bytes(wav)
+            weights = root / 'models' / character
+            weights.mkdir(parents=True)
+            for name in (f'{character}-e15.ckpt', f'{character}_e8_s232.pth'):
+                (weights / name).write_bytes(b'weights')
+            profile = {'character': character, 'transcript': f'我是{character}',
+                       'reference_sha256': hashlib.sha256(wav).hexdigest()}
+            if character == 'arona':
+                profile.update(t2s_weights='models/arona/arona-e15.ckpt',
+                               vits_weights='models/arona/arona_e8_s232.pth')
+            path = root / ('profile.json' if character == 'plana' else 'profiles/arona.json')
+            path.write_text(json.dumps(profile), encoding='utf-8')
+            with patch.object(worker, 'ROOT', root):
+                loaded = load_reference(character)
+                assert loaded['reference_audio'] == str(ref.resolve())
+                assert loaded['transcript'] == f'我是{character}'
+                if character == 'arona':
+                    pipeline._arona_reference_text = loaded['transcript']
+                    pipeline._arona_reference_audio = loaded['reference_audio']
+                    synthesize(pipeline, '老师你好。')
+                    assert pipeline.request['ref_audio_path'] == str(ref.resolve())
+                    profile['reference_sha256'] = 'changed'
+                    path.write_text(json.dumps(profile), encoding='utf-8')
+                    try:
+                        load_reference(character)
+                    except ValueError:
+                        pass
+                    else:
+                        raise AssertionError('changed reference must not be silently accepted')
+        # Switching character replaces the resident worker rather than loading
+        # both large models, and can never reuse the other speaker's process.
+        active = CharacterVoiceClient(root)
+        active._process = SimpleNamespace(poll=lambda: None)
+        active._character = 'plana'
+        with patch.object(active, 'close') as close:
+            active._start('plana')
+            close.assert_not_called()
+            try:
+                active._start('arona')
+            except RuntimeError:
+                pass
+            close.assert_called_once()
         from wecvoice_auto.tts import AudioClip
         samples = np.array([.1, .2, -.3], dtype=np.float32)
         backend = Mock()

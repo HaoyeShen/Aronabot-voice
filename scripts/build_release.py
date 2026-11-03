@@ -17,7 +17,7 @@ from app import __version__
 OUT = ROOT / 'release'
 SOURCE_DIRS = ('app', 'assets', 'tests', 'scripts', 'tools', 'docs', 'vendor')
 SOURCE_FILES = ('run.py', 'send_test_voice.py', 'README.md', 'CHANGELOG.md', 'LICENSE', 'index.html',
-                'requirements.txt', 'requirements-wechatauto.txt', '.gitignore', 'ARONA.spec',
+                'requirements.txt', 'requirements-character-voice.txt', 'requirements-wechatauto.txt', '.gitignore', 'ARONA.spec',
                 '.github/workflows/release.yml')
 SECRET = re.compile(rb'(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{30,}|sk-[A-Za-z0-9]{25,})')
 
@@ -48,7 +48,7 @@ def audit(path: Path, payload: bytes):
 
 def source_zip():
     OUT.mkdir(exist_ok=True)
-    target = OUT/f'ARONA-Voice-v{__version__}-source.zip'
+    target = OUT/f'Shittim-Chest-v{__version__}-source.zip'
     with zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(set(source_files())):
             payload = path.read_bytes()
@@ -60,7 +60,7 @@ def source_zip():
 def build_windows():
     subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', str(ROOT/'ARONA.spec')],
                    cwd=ROOT, check=True)
-    dist = ROOT/'dist'/'ARONA'
+    dist = ROOT/'dist'/'什亭之匣'
     sticker_dir = dist/'data'/'stickers'
     sticker_dir.mkdir(parents=True, exist_ok=True)
     from app.defaults import default_stickers
@@ -71,9 +71,9 @@ def build_windows():
     for name in ('README.md', 'LICENSE', 'CHANGELOG.md'):
         shutil.copy2(ROOT/name, dist/name)
     # Smoke the clean build before publishing any artifact.
-    subprocess.run([str(dist/'ARONA.exe'), '--ui-smoke'], cwd=dist, check=True, timeout=120)
+    subprocess.run([str(dist/'什亭之匣.exe'), '--ui-smoke'], cwd=dist, check=True, timeout=120)
     # Smoke creates local defaults and empty DBs. Never ship generated runtime data.
-    target = OUT/f'ARONA-Voice-v{__version__}-windows-x64.zip'
+    target = OUT/f'Shittim-Chest-v{__version__}-windows-x64.zip'
     with zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED) as archive:
         for path in dist.rglob('*'):
             if not path.is_file():
@@ -81,7 +81,7 @@ def build_windows():
             rel = path.relative_to(dist)
             if rel.parts[0] in ('data', 'logs') and not (len(rel.parts) == 3 and rel.parts[0:2] == ('data', 'stickers') and path.suffix == '.png'):
                 continue
-            archive.write(path, 'ARONA/'+rel.as_posix())
+            archive.write(path, '什亭之匣/'+rel.as_posix())
     return target
 
 

@@ -180,6 +180,8 @@ class ConfigStore:
         bot["group_at_include_self_name"] = bool(bot.get("group_at_include_self_name", True))
         bot["idle_chat_enabled"] = bool(bot.get("idle_chat_enabled", True))
         bot["idle_video_enabled"] = bool(bot.get("idle_video_enabled", True))
+        bot['share_images_direct'] = bool(bot.get('share_images_direct', True))
+        bot['share_web_screenshots'] = bool(bot.get('share_web_screenshots', True))
         bot["idle_video_manual_chat"] = str(bot.get("idle_video_manual_chat") or "test").strip() or "test"
         bot["idle_video_topics"] = video_topics(bot.get("idle_video_topics")) or ["蔚蓝档案"]
         try:
@@ -211,6 +213,13 @@ class ConfigStore:
         bot["quote_reply"] = bool(bot.get("quote_reply", False))
         bot["voice_enabled"] = bool(bot.get("voice_enabled", False))
         bot["web_search_enabled"] = bool(bot.get("web_search_enabled", True))
+        bot["agent_enabled"] = bool(bot.get("agent_enabled", True))
+        for field, default, lower, upper in (("agent_max_steps", 4, 1, 8),
+                                              ("agent_timeout_seconds", 90, 10, 300)):
+            try:
+                bot[field] = max(lower, min(upper, int(bot.get(field, default))))
+            except (TypeError, ValueError, OverflowError):
+                bot[field] = default
         bot["web_search_test_query"] = str(bot.get("web_search_test_query") or "Python 装饰器").strip()[:120] or "Python 装饰器"
         try:
             bot["voice_probability"] = max(0.0, min(1.0, float(bot.get("voice_probability", 0.5))))
@@ -527,6 +536,9 @@ class PersonaStore:
                     item.setdefault("sticker_guidance", "")
                     item.setdefault("catchphrases", [])
                     item.setdefault("examples", [])
+                    item['address_template'] = str(item.get('address_template') or '')
+                    for field in ('voice_preset_id', 'voice_rate', 'voice_pitch', 'voice_volume'):
+                        item[field] = str(item.get(field) or '')
                     item.setdefault("builtin", False)
                     item.setdefault("created_at", _now())
                     item.setdefault("updated_at", item["created_at"])

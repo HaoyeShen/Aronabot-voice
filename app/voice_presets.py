@@ -12,6 +12,18 @@ from .paths import DATA
 
 log = logging.getLogger(__name__)
 
+
+def resolve_persona_voice(persona, store, fallback='arona'):
+    """Per-persona overrides; legacy/deleted selections inherit the global voice."""
+    available = {item['id'] for item in store.list()}
+    selected = str(persona.get('voice_preset_id') or '')
+    preset = store.get(selected if selected in available else fallback)
+    for key in ('rate', 'pitch', 'volume'):
+        value = str(persona.get('voice_' + key) or '').strip()
+        if value:
+            preset[key] = value
+    return preset
+
 VOICE_FILE = DATA / "voice_presets.json"
 
 BUILTIN_PRESETS = [

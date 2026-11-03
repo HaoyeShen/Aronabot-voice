@@ -21,10 +21,15 @@ log = logging.getLogger(__name__)
 SEARCH_MARKER = re.compile(r'\[(?:SEARCH|搜索)\s*[:：]\s*([^\]\n]{2,160})\]', re.I)
 UNCERTAIN = re.compile(r'答不上|答不出|不知道|不(?:太|是很)?(?:清楚|了解|熟悉)|还不懂|没听说过|我不会|无法(?:确定|确认|回答)|没有(?:相关|足够|实时).{0,5}(?:信息|资料)|不确定')
 MECHANICAL = re.compile(r'(?:抱歉|对不起).{0,30}(?:答不上|答不出|不知道|不(?:太)?清楚|不了解|不懂|知识范围|无法.{0,8}(?:回答|答复|确认|确定)|(?:没有|缺乏|不能).{0,8}(?:信息|资料|回答|答复))|我现在答不上来')
+NO_WEB = re.compile(r'(?:没法|无法|不能|没办法|不支持)\s*(?:(?:直接|实时|帮你|去|进行)\s*){0,2}(?:上网|联网|搜索|访问(?:互联网|网络|网页))|(?:没有|不具备)(?:联网|上网|实时搜索)(?:能力|功能|权限)', re.I)
 
 
 def search_forbidden(text: str) -> bool:
-    return bool(re.search(r'(?:不要|不用|别|禁止).{0,5}(?:联网|搜索|上网|查网)', text or ''))
+    # Negation must govern the search action, not a nearby unrelated verb:
+    # "不用猜，直接上网查" is a request to search.
+    return bool(re.search(
+        r'(?:不要|不用|不必|别|禁止)\s*(?:(?:再|去|进行|帮我|给我|为我|替我|你|用|使用|直接)\s*){0,3}'
+        r'(?:联网|搜索|上网|查网)', text or ''))
 
 
 def time_sensitive(text: str) -> bool:
@@ -167,10 +172,10 @@ class _BingResults(HTMLParser):
             self.current, self.heading, self.paragraph = None, False, False
 
 
-def _discover(query, kind):
+def _discover(query, kind, timeout=6):
     try:
         url = 'https://www.bing.com/search?q=' + urllib.parse.quote_plus(query)
-        raw = _search_text(url + ('&format=rss' if kind == 'rss' else '&mkt=zh-CN&ensearch=0&setlang=zh-hans'), 6)
+        raw = _search_text(url + ('&format=rss' if kind == 'rss' else '&mkt=zh-CN&ensearch=0&setlang=zh-hans'), timeout)
         if kind == 'rss':
             if '<!DOCTYPE' in raw.upper() or '<!ENTITY' in raw.upper():
                 return []
@@ -197,7 +202,8 @@ class WebSearch:
         self._cache = {}
         self._lock = threading.Lock()
 
-    def search(self, query: str, *, fresh: bool = False, cancelled=lambda: False) -> list[WebPage]:
+    def search(self, query: str, *, fresh: bool = False, cancelled=lambda: False,
+               timeout_seconds: float = 20) -> list[WebPage]:
         query = normalize_query(query)
         if not query or cancelled():
             return []
@@ -205,12 +211,15 @@ class WebSearch:
             cached = self._cache.get(query)
             if not fresh and cached and time.monotonic() - cached[0] < 300:
                 return list(cached[1])
-        deadline = time.monotonic() + 20
+        if timeout_seconds < 1:
+            return []
+        deadline = time.monotonic() + min(20, timeout_seconds)
         candidates = []
         with ThreadPoolExecutor(max_workers=2) as pool:
-            for items in pool.map(lambda kind: _discover(query, kind), ('html', 'rss')):
+            for items in pool.map(lambda kind: _discover(query, kind, min(6, timeout_seconds)), ('html', 'rss')):
                 candidates.extend(items)
-        if not any(_relevant(query, title + ' ' + snippet) for url, title, snippet in candidates) and not cancelled():
+        if (not any(_relevant(query, title + ' ' + snippet) for url, title, snippet in candidates)
+                and not cancelled() and deadline - time.monotonic() >= 1):
             try:
                 raw = _search_text('https://html.duckduckgo.com/html/?q=' + urllib.parse.quote_plus(query), min(6, deadline-time.monotonic()))
                 parser = _DuckResults()

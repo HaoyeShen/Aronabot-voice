@@ -28,6 +28,12 @@ def main():
     for private in (('sk-' + 'a' * 26), '我的手机号是什么', '联系我 user@example.com', 'C:\\private\\notes.txt'):
         assert not web.normalize_query(private)
     assert web.search_forbidden('不要联网查这个')
+    for text in ('不用猜，直接上网查就行了', '你不知道小特325是啥不用猜 直接上网查就行了',
+                 '别乱说，帮我查一下 Python 装饰器', '不要猜，联网搜索一下'):
+        assert not web.search_forbidden(text), text
+        assert web.explicit_search(text), text
+    for text in ('不用联网，凭已有知识回答', '别再帮我搜索了', '不要直接上网查', '禁止使用搜索引擎'):
+        assert web.search_forbidden(text), text
     assert web.time_sensitive('北京今天天气怎么样')
     assert not web.factual_question('我好难过，怎么办？')
     for old in ('抱歉，我现在答不上来。', '对不起，这个问题我答不出来。', '抱歉，我没有足够资料回答。'):
@@ -67,7 +73,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp)
         config = ConfigStore(base/'config.json')
-        config.bot.update(web_search_enabled=True, reply_delay_max=0, reply_delay_min=0)
+        config.bot.update(web_search_enabled=True, agent_enabled=False, reply_delay_max=0, reply_delay_min=0)
         memory = MemoryStore(base/'memory.db')
         training = TrainingStore(base/'training.db', base/'files')
         service = BotService(config, PersonaStore(base/'personas.json'), StickerStore(base/'stickers.json'), memory, training,
@@ -84,12 +90,38 @@ def main():
                 lookup.assert_called_once()
                 assert info['searched'] and len(info['sources']) == 1 and info['learned'] == 1
                 assert BODY[:100] in client.chat.call_args.args[1] and '不是发布时间' in system
+                assert '程序实际语音能力' in system and '并非只能打字' in system
+                assert '当前未连接微信' in system, 'debug model calls must not claim they can send immediately'
             hits = training.search('Python 装饰器')
             assert hits and hits[0]['source_type'] == 'web' and hits[0]['source_url'] == PAGE.url
-            client.chat.side_effect = [result('我不知道这个是什么。'), result('装饰器能扩展函数行为。')]
+            client.chat.side_effect = [result('我不知道这个是什么。'), result('[SEARCH:Python 装饰器]'),
+                                       result('装饰器能扩展函数行为。')]
             with patch.object(service.web_search, 'search', return_value=[PAGE]) as lookup:
                 answer, _, _, info = service._model_reply(client, [], '', profile, incoming, incoming.content, require_running=False)
-                assert not info['searched'] and info['learned'] == 0
+                assert info['searched'] and answer.text == '装饰器能扩展函数行为。'
+                lookup.assert_called_once()
+            for text in ('不用猜，直接上网查 Python 装饰器是什么', '你不知道小特325是啥不用猜 直接上网查就行了'):
+                explicit_case = IncomingMessage('test', '群友', text, chat_type='group')
+                client.chat.side_effect = [result('[SEARCH:Python 装饰器]'), result('装饰器能扩展函数行为。')]
+                with patch.object(service.web_search, 'search', return_value=[PAGE]) as lookup:
+                    answer, _, _, info = service._model_reply(client, [], '', profile, explicit_case, text, require_running=False)
+                    lookup.assert_called_once()
+                    assert info['searched'] and answer.text == '装饰器能扩展函数行为。'
+            client.chat.side_effect = [result('唔，阿洛娜现在没法上网查呢。'), result('[SEARCH:Python 装饰器]'),
+                                       result('装饰器能扩展函数行为。')]
+            with patch.object(service.web_search, 'search', return_value=[PAGE]) as lookup:
+                answer, _, _, info = service._model_reply(client, [], '', profile, incoming, incoming.content, require_running=False)
+                lookup.assert_called_once()
+                assert info['searched'] and answer.text == '装饰器能扩展函数行为。'
+            client.chat.side_effect = [result('[SEARCH:Python 装饰器]'), result('阿洛娜无法联网搜索哦。')]
+            with patch.object(service.web_search, 'search', return_value=[]) as lookup:
+                answer, _, _, info = service._model_reply(client, [], '', profile, incoming, incoming.content, require_running=False)
+                lookup.assert_called_once()
+                assert info['searched'] and not web.NO_WEB.search(answer.text)
+            forbidden = IncomingMessage('test', '群友', '不要联网查 Python 装饰器是什么', chat_type='group')
+            client.chat.side_effect = [result('我不知道这个是什么。')]
+            with patch.object(service.web_search, 'search') as lookup:
+                service._model_reply(client, [], '', profile, forbidden, forbidden.content, require_running=False)
                 lookup.assert_not_called()
             explicit = IncomingMessage('test', '群友', '帮我查一下 Python 装饰器', chat_type='group')
             client.chat.side_effect = [result('[SEARCH:Python 装饰器]'), result('装饰器能扩展函数行为。')]

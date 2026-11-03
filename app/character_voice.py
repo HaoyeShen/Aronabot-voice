@@ -12,6 +12,7 @@ import subprocess
 import threading
 
 from .paths import BUNDLE, DATA
+from .agent_runtime import RUNTIME, task_entry
 
 log = logging.getLogger(__name__)
 VOICE_ROOT = DATA / 'character_voice'
@@ -24,6 +25,7 @@ class CharacterVoiceClient:
         self._process = None
         self._responses = None
         self._stderr = None
+        self._character = None
 
     @staticmethod
     def _read_responses(process, responses):
@@ -57,17 +59,23 @@ class CharacterVoiceClient:
             raise RuntimeError('本机角色语音合成失败：' + str(response['error']))
         return response
 
-    def _start(self):
-        if self._process is not None and self._process.poll() is None:
+    def _start(self, character='plana'):
+        if character not in ('arona', 'plana'):
+            raise ValueError('未知的本机角色音色')
+        if (self._process is not None and self._process.poll() is None
+                and self._character == character):
             return
         self.close()
         python = self.root / 'runtime/Scripts/python.exe'
         worker = BUNDLE / 'scripts/character_voice_worker.py'
         try:
-            profile = json.loads((self.root / 'profile.json').read_text(encoding='utf-8'))
+            path = (self.root / 'profile.json' if character == 'plana'
+                    else self.root / 'profiles' / f'{character}.json')
+            profile = json.loads(path.read_text(encoding='utf-8'))
         except (OSError, ValueError) as exc:
             raise RuntimeError('本机角色音色尚未配置') from exc
-        if not profile.get('validated') or not python.is_file() or not worker.is_file():
+        if (not profile.get('validated') or profile.get('character') != character
+                or not python.is_file() or not worker.is_file()):
             raise RuntimeError('本机角色音色尚未通过合成验证')
         env = dict(os.environ, PYTHONUTF8='1', PYTHONIOENCODING='utf-8',
                    PYTHONNOUSERSITE='1', ARONA_CHARACTER_VOICE_ROOT=str(self.root),
@@ -75,12 +83,13 @@ class CharacterVoiceClient:
         self._stderr = (self.root / 'worker.log').open('a', encoding='utf-8')
         try:
             process = subprocess.Popen(
-                [str(python), '-u', str(worker)], cwd=self.root,
+                [str(python), '-u', str(worker), '--character', character], cwd=self.root,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._stderr,
                 text=True, encoding='utf-8', env=env,
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
             )
             self._process = process
+            self._character = character
             self._responses = queue.Queue()
             threading.Thread(target=self._read_responses,
                              args=(process, self._responses), daemon=True).start()
@@ -90,9 +99,9 @@ class CharacterVoiceClient:
             self.close()
             raise
 
-    def synthesize(self, text, speed=1.0):
+    def synthesize(self, text, speed=1.0, *, character='plana'):
         with self._lock:
-            self._start()
+            self._start(character)
             try:
                 self._process.stdin.write(json.dumps({'text': text, 'speed': speed},
                                                      ensure_ascii=False) + '\n')
@@ -110,6 +119,7 @@ class CharacterVoiceClient:
     def close(self):
         # No request lock here: stopping must also interrupt a slow inference.
         process, self._process = self._process, None
+        self._character = None
         if process is not None:
             try:
                 if process.poll() is None:
@@ -138,18 +148,21 @@ atexit.register(_client.close)
 
 
 class CharacterTTS:
-    def __init__(self, sample_rate=48000, client=None):
+    def __init__(self, sample_rate=48000, client=None, *, character='plana'):
         self.sample_rate = sample_rate
         self.client = client or _client
+        self.character = character
 
+    @task_entry('角色语音合成')
     def synthesize(self, text, profile):
+        RUNTIME.note('tool_call', {'tool':'角色语音合成','text':text,'character':self.character})
         if re.search('[A-Za-z]', text):
             raise RuntimeError('本机角色音色当前仅支持中文，本条回退文字')
         import miniaudio
         import numpy as np
         from wecvoice_auto.tts import AudioClip
         speed = max(.5, min(1.5, 1 + float(profile.rate.rstrip('%')) / 100))
-        data = self.client.synthesize(text, speed)
+        data = self.client.synthesize(text, speed, character=self.character)
         decoded = miniaudio.decode(data, output_format=miniaudio.SampleFormat.FLOAT32,
                                    nchannels=1, sample_rate=self.sample_rate)
         samples = np.asarray(decoded.samples, dtype=np.float32)
@@ -160,6 +173,7 @@ class CharacterTTS:
         peak = float(np.abs(samples).max())
         if peak > .9:
             samples *= .9 / peak
+        RUNTIME.note('tool_result', {'tool':'角色语音合成','seconds':len(samples)/self.sample_rate})
         return AudioClip(samples, self.sample_rate, text)
 
 
@@ -168,10 +182,13 @@ class PaddedTTS:
     def __init__(self, backend):
         self.backend = backend
 
+    @task_entry('语音合成')
     def synthesize(self, text, profile):
+        RUNTIME.note('tool_call', {'tool':'语音合成','text':text,'backend':type(self.backend).__name__})
         import numpy as np
         from wecvoice_auto.tts import AudioClip
         clip = self.backend.synthesize(text, profile)
+        RUNTIME.note('tool_result', {'tool':'语音合成','seconds':clip.duration})
         return AudioClip(np.concatenate((clip.samples, np.zeros(round(clip.sample_rate * .6), dtype=np.float32))),
                          clip.sample_rate, clip.text)
 
@@ -179,9 +196,11 @@ class PaddedTTS:
 def make_tts(preset, config=None):
     """Use exactly the selected backend; errors retain the caller's text fallback."""
     if preset.get('engine', 'edge') == 'gpt_sovits':
-        if preset.get('id') != 'plana':
-            raise ValueError('本机角色模型仅配置了普拉娜')
-        return PaddedTTS(CharacterTTS(getattr(config, 'sample_rate', 48000)))
+        character = preset.get('id')
+        if character not in ('arona', 'plana'):
+            raise ValueError('未知的本机角色音色')
+        return PaddedTTS(CharacterTTS(getattr(config, 'sample_rate', 48000),
+                                      character=character))
     if preset.get('engine', 'edge') != 'edge':
         raise ValueError('未知的语音合成引擎')
     from wecvoice_auto.tts import EdgeTTS

@@ -1,10 +1,10 @@
-﻿$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $Desktop = [Environment]::GetFolderPath("Desktop")
-$ShortcutPath = Join-Path $Desktop "ARONA 微信助手.lnk"
-$Target = Join-Path $Root "启动 ARONA.bat"
+$ShortcutPath = Join-Path $Desktop "什亭之匣.lnk"
+$Target = Join-Path $Root "启动 什亭之匣.bat"
 $Arguments = ""
-$IconExe = Join-Path $Root ".venv\Scripts\ARONA.exe"
+$IconExe = Join-Path $Root ".venv\Scripts\什亭之匣.exe"
 if (Test-Path -LiteralPath $IconExe) {
     $Target = $IconExe
     $Arguments = "`"$(Join-Path $Root 'run.py')`""
@@ -16,6 +16,6 @@ $Shortcut.TargetPath = $Target
 $Shortcut.Arguments = $Arguments
 $Shortcut.WorkingDirectory = $Root
 $Shortcut.IconLocation = "$Icon,0"
-$Shortcut.Description = "ARONA · 什亭之匣微信助手"
+$Shortcut.Description = "什亭之匣"
 $Shortcut.Save()
 Write-Host "已创建桌面快捷方式：$ShortcutPath" -ForegroundColor Green

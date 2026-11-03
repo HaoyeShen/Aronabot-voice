@@ -21,7 +21,32 @@ ROOT = Path(os.environ.get('ARONA_CHARACTER_VOICE_ROOT',
                           Path(__file__).resolve().parents[1] / 'data' / 'character_voice')).resolve()
 
 
-def load_pipeline():
+def load_reference(character='plana'):
+    if character not in ('arona', 'plana'):
+        raise ValueError('unknown character profile')
+    path = ROOT / 'profile.json' if character == 'plana' else ROOT / 'profiles' / f'{character}.json'
+    reference = json.loads(path.read_text(encoding='utf-8'))
+    if not reference.get('transcript') or reference.get('character') != character:
+        raise ValueError('invalid character reference profile')
+    defaults = {
+        'reference_audio': f'{character}-reference.wav',
+        't2s_weights': 'models/plana/plana-e15.ckpt' if character == 'plana' else '',
+        'vits_weights': 'models/plana/plana_e8_s232.pth' if character == 'plana' else '',
+    }
+    for field, default in defaults.items():
+        value = reference.get(field, default)
+        if not value:
+            raise ValueError('missing character asset')
+        asset = (ROOT / value).resolve()
+        if not asset.is_relative_to(ROOT) or not asset.is_file():
+            raise ValueError('invalid character asset')
+        reference[field] = str(asset)
+    if hashlib.sha256(Path(reference['reference_audio']).read_bytes()).hexdigest() != reference['reference_sha256']:
+        raise ValueError('reference audio changed; revalidate the character profile')
+    return reference
+
+
+def load_pipeline(character='plana'):
     os.environ.update(HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', version='v2', MPLBACKEND='Agg')
     cache = ROOT / 'cache'
     for name, folder in {'HF_HOME': 'huggingface', 'TRANSFORMERS_CACHE': 'transformers',
@@ -31,11 +56,7 @@ def load_pipeline():
         target.mkdir(parents=True, exist_ok=True)
         os.environ[name] = str(target)
     source = ROOT / 'GPT-SoVITS'
-    reference = json.loads((ROOT / 'profile.json').read_text(encoding='utf-8'))
-    if hashlib.sha256((ROOT / 'plana-reference.wav').read_bytes()).hexdigest() != reference['reference_sha256']:
-        raise ValueError('reference audio changed; revalidate the character profile')
-    if not reference.get('transcript') or reference.get('character') != 'plana':
-        raise ValueError('invalid character reference profile')
+    reference = load_reference(character)
     os.chdir(source)
     sys.path[:0] = [str(source), str(source / 'GPT_SoVITS')]
     import numpy as np
@@ -80,8 +101,8 @@ def load_pipeline():
     from TTS_infer_pack.TTS import TTS, TTS_Config
     settings = {
         'device': 'cpu', 'is_half': False, 'version': 'v2',
-        't2s_weights_path': str(ROOT / 'models/plana/plana-e15.ckpt'),
-        'vits_weights_path': str(ROOT / 'models/plana/plana_e8_s232.pth'),
+        't2s_weights_path': reference['t2s_weights'],
+        'vits_weights_path': reference['vits_weights'],
         'bert_base_path': str(ROOT / 'models/base/chinese-roberta-wwm-ext-large'),
         'cnhuhbert_base_path': str(ROOT / 'models/base/chinese-hubert-base'),
     }
@@ -94,6 +115,7 @@ def load_pipeline():
         pipeline.bert_model, {torch.nn.Linear}, dtype=torch.qint8, inplace=True)
     pipeline.text_preprocessor.bert_model = pipeline.bert_model
     pipeline._arona_reference_text = reference['transcript']
+    pipeline._arona_reference_audio = reference['reference_audio']
     return pipeline
 
 
@@ -110,7 +132,7 @@ def synthesize(pipeline, text, speed=1.0):
         raise ValueError('invalid speech speed')
     request = {
         'text': text, 'text_lang': 'all_zh',
-        'ref_audio_path': str(ROOT / 'plana-reference.wav'),
+        'ref_audio_path': getattr(pipeline, '_arona_reference_audio', str(ROOT / 'plana-reference.wav')),
         'prompt_text': getattr(pipeline, '_arona_reference_text', '老师，生物认证完毕。'),
         'prompt_lang': 'all_zh',
         'text_split_method': 'cut0', 'batch_size': 1, 'speed_factor': speed,
@@ -141,11 +163,12 @@ def synthesize(pipeline, text, speed=1.0):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--character', choices=('arona', 'plana'), default='plana')
     parser.add_argument('--text', default='老师，我是普拉娜，请多关照。')
     args = parser.parse_args()
     output = args.output.resolve() if args.output else None
     with contextlib.redirect_stdout(sys.stderr):
-        pipeline = load_pipeline()
+        pipeline = load_pipeline(args.character)
     if output:
         with contextlib.redirect_stdout(sys.stderr):
             audio = synthesize(pipeline, args.text)

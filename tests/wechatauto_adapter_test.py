@@ -162,6 +162,18 @@ def main() -> int:
     }, listener)
     assert incoming[-1].direction == "out"
     assert incoming[-1].origin == "self"
+    # A reused local ID must not suppress a fresh mention days later.
+    old = {'shard':'message_0.db', 'local_id':11, 'sort_seq':100, 'create_time':1700000000}
+    fresh = {**old, 'sort_seq':200, 'create_time':1700100000}
+    key = adapter._message_external_id('room@chatroom', old)
+    assert key == adapter._message_external_id('room@chatroom', dict(old))
+    assert key != adapter._message_external_id('room@chatroom', fresh)
+    assert adapter._message_external_id('room@chatroom', {'content':'hello'}).startswith('fp:')
+    target = {'type':'group'}
+    mapped = adapter._map_message({**fresh, 'username':'room@chatroom', 'sender_username':'wxid_friend',
+                                   'content':'@ARONA 在吗', 'type':'文本'}, target, '测试群')
+    assert mapped.external_id == adapter._message_external_id('room@chatroom', fresh)
+    assert mapped.direction == 'in'
 
     result = adapter.send_text("测试群", "测试回复")
     assert result.ok, result.message

@@ -77,6 +77,13 @@ def voice_reply_requested(content: str) -> bool:
         return False
     if re.search(r"是什么意思|什么意思|有什么(?:用|好处|区别)|(?:怎么|如何)(?:实现|设置|开启)", text):
         return False
+    # "你这不是能发语音吗" asks about an existing capability. A polite
+    # concrete request such as "可以给我发一条语音吗" still requests audio.
+    capability = re.search(
+        r"(?:能不能|会不会|可不可以)(?:发|发送)语音|"
+        r"(?:能|会|可以)(?:发|发送)语音(?:吗|么|嘛|[？?]|$)", text)
+    if capability and not re.search(r"给我|回我|现在|这次|一条|一段|听听|试试|请", text):
+        return False
     request = re.search(
         r"(?:用|以)(?:语音|声音)(?:来)?(?:回复|回答|回我|说|读|念)|"
         r"(?:语音|声音)(?:回复|回答|回我)|(?:发|发送|回)(?:我|给我)?(?:一|个|条|段|一条|一段)?语音|"
@@ -91,6 +98,29 @@ def voice_reply_requested(content: str) -> bool:
         return False
     reported = re.search(r"(?:昨天|刚才|之前|上次|他|她|别人|有人|小明|小红).{0,12}(?:说|问|让|要求)|转述|听说|提到", prefix)
     return not reported or bool(re.search(r"现在请|这次请|我想听|我希望", prefix[reported.end():]))
+
+
+def cat_sound_requested(content: str) -> bool:
+    """Only a current, direct request permits a temporary cat imitation."""
+    text = _voice_request_text(content)
+    if not text or re.search(r'是什么意思|什么意思|含义|为什么|为啥', text):
+        return False
+    if re.search(r'(?:不要|别|不用|无需|禁止)\s*(?:(?:再|学|模仿|你|来|主动)\s*){0,3}(?:喵|猫叫|猫咪叫)', text):
+        return False
+    request = re.search(r'喵(?:一|个|两|几|三)声|(?:学|模仿)(?:一下)?(?:猫|猫咪|小猫)叫|(?:叫|来|说)(?:一声|一句|个)?喵(?:[～~。！!\s]|$)', text)
+    if not request:
+        # Explicitly reading a quoted "喵" is a request, whereas merely
+        # quoting "阿洛娜，喵一声" above is not.
+        original = _WXID.sub('', _LABEL.sub('', str(content or '')))
+        quoted = re.search(r'(?:说|读|念)(?:一下|一声|一句)?\s*[“"「‘\']喵(?:呜)?[～~]*[”"」’\']', original)
+        if quoted:
+            text, request = original, quoted
+    if not request:
+        return False
+    prefix = text[:request.start()]
+    if re.fullmatch(r'(?:我|他|她|我们|他们|有人|别人|小明|小红)(?:刚才|昨天|之前|想|要|打算|会|也|在)*', prefix.strip()):
+        return False
+    return not re.search(r'(?:昨天|刚才|之前|上次|他|她|别人|有人|小明|小红).{0,12}(?:说|问|让|要求)|转述|听说|提到', prefix)
 
 
 def understand_message(text: str, history: list[dict] | None = None,

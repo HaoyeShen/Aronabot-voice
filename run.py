@@ -72,7 +72,7 @@ def set_dpi_awareness() -> None:
 
 def show_fatal(message: str) -> None:
     try:
-        ctypes.windll.user32.MessageBoxW(None, message, "ARONA 启动失败", 0x10)
+        ctypes.windll.user32.MessageBoxW(None, message, "什亭之匣启动失败", 0x10)
     except Exception:
         print(message, file=sys.stderr)
 
@@ -100,7 +100,7 @@ def run_check() -> int:
     service = build_services()
     try:
         state = service.state()
-        print("ARONA 自动诊断")
+        print("什亭之匣自动诊断")
         print("=" * 64)
         print(f"模型：{state.get('model')} · 人格：{state.get('persona')}")
         print(f"监听对象：{state.get('target_count')} · 表情包：{state.get('sticker_count')}")
@@ -176,7 +176,7 @@ def run_ui_smoke(timeout_ms: int = 1800) -> int:
 
 def main() -> int:
     configure_local_temp()
-    parser = argparse.ArgumentParser(description="ARONA WeChat assistant")
+    parser = argparse.ArgumentParser(description="什亭之匣微信助手")
     parser.add_argument("--check", action="store_true", help="run diagnostics and exit")
     parser.add_argument("--ui-smoke", action="store_true", help="build UI and close")
     args = parser.parse_args()
@@ -187,8 +187,8 @@ def main() -> int:
 
     if current_integrity() == "Low":
         show_fatal(
-            "ARONA 当前以低完整性（Low）运行，无法读取微信进程。\n\n"
-            "请关闭本窗口，改为从桌面/文件资源管理器双击「启动 ARONA.bat」，\n"
+            "什亭之匣当前以低完整性（Low）运行，无法读取微信进程。\n\n"
+            "请关闭本窗口，改为从桌面/文件资源管理器双击「启动 什亭之匣.bat」，\n"
             "或运行「创建桌面快捷方式.bat」后从桌面启动。\n\n"
             "启动脚本会把 .venv 的 Python 启动器修复为 Medium 完整性。"
         )
@@ -205,7 +205,7 @@ def main() -> int:
     from app.logging_setup import setup_logging
 
     setup_logging()
-    logging.getLogger("arona").info("ARONA 启动 · 数据库 + UIA · 无 wxauto · 无截图/录屏")
+    logging.getLogger("arona").info("什亭之匣启动 · 数据库 + UIA · 无 wxauto · 无截图/录屏")
     try:
         service = build_services()
     except Exception:
@@ -229,7 +229,7 @@ def main() -> int:
             logging.getLogger("arona.ui").error("界面异常：%s", detail)
             try:
                 from tkinter import messagebox
-                messagebox.showerror("ARONA 界面异常",
+                messagebox.showerror("什亭之匣界面异常",
                                      "界面发生异常，详细信息已写入 logs/arona.log。\n\n"
                                      + str(exc_value)[:500])
             except Exception:
@@ -250,4 +250,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    if len(sys.argv) == 3 and sys.argv[1] == '--web-render-worker':
+        from app.web_media import render_worker
+        render_worker(sys.argv[2])
+    else:
+        raise SystemExit(main())

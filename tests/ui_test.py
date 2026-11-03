@@ -74,13 +74,36 @@ def main() -> int:
         root.update()
         home._draw()
         assert set(home.tiles) == set((
-            'dashboard', 'debug', 'monitor', 'stickers', 'targets', 'listen_reply',
+            'dashboard', 'debug', 'agent', 'monitor', 'stickers', 'targets', 'listen_reply',
             'personas', 'models', 'training', 'logs', 'settings'))
         assert len(home._portrait_photos) == 2, f'both portrait frames must load: {home.canvas.winfo_width()}x{home.canvas.winfo_height()}'
         for tile in home.tiles.values():
             assert tile.winfo_x() >= 0 and tile.winfo_y() >= 0
             assert tile.winfo_x()+tile.winfo_width() <= home.canvas.winfo_width()
             assert tile.winfo_y()+tile.winfo_height() <= home.canvas.winfo_height()
+        from app.agent_runtime import RUNTIME
+        from app.model_audit import model_call
+        from types import SimpleNamespace
+        agent_fixture=SimpleNamespace(model='ui-fixture',api_key='',chat=lambda *a,**k:SimpleNamespace(text='A群的回答'))
+        with RUNTIME.task('UI 测试任务','独立聊天A','ui_agent_a'):
+            model_call(agent_fixture,'chat','消息回复',[{'role':'user','content':'A群输入'}])
+        with RUNTIME.task('另一个聊天','独立聊天B','ui_agent_b'):
+            RUNTIME.note('agent','B群不可串入A群的内容')
+        app.show_page('agent')
+        agent_page=app.pages['agent']
+        agent_page.agent_select.set(next(k for k in agent_page._agent_ids if k.startswith('独立聊天A')))
+        agent_page.refresh()
+        def visible_text(widget):
+            values=[]
+            if isinstance(widget,tk.Label):values.append(str(widget.cget('text')))
+            for child in widget.winfo_children():values.extend(visible_text(child))
+            return values
+        shown='\n'.join(visible_text(agent_page.bubbles))
+        assert 'A群输入' in shown and 'A群的回答' in shown
+        assert 'B群不可串入A群' not in shown
+        agent_page.clear_view()
+        assert not agent_page._ids
+        app.show_page('home')
         header_frames = app.topbar.winfo_children()[:2]
         assert header_frames[0].winfo_rootx()+header_frames[0].winfo_width() <= header_frames[1].winfo_rootx(), 'header must not overlap at minimum size'
         x1, y1, x2, y2 = home._head_box
@@ -154,6 +177,9 @@ def main() -> int:
         # The manual test stays responsive and completes after navigating away.
         reply_page = app.pages['listen_reply']
         assert reply_page.web_search_enabled.get()
+        assert reply_page.agent_enabled.get()
+        assert reply_page.agent_max_steps.get() == '4'
+        assert reply_page.agent_timeout.get() == '90'
         assert reply_page.web_test_query.get() == 'Python 装饰器'
         reply_page.web_test_query.set('')
         with patch.object(service, 'test_web_search') as probe:
@@ -219,6 +245,8 @@ def main() -> int:
         assert saved_bot['idle_video_topics'] == ['蔚蓝档案', '明日方舟']
         assert saved_bot['idle_video_probability'] == .65
         assert saved_bot['web_search_enabled'] and saved_bot['web_search_test_query'] == 'Python 装饰器'
+        assert saved_bot['agent_enabled'] and saved_bot['agent_max_steps'] == 4
+        assert saved_bot['agent_timeout_seconds'] == 90
         reply_page.web_search_enabled.switch._toggle()
         reply_page.save()
         assert ConfigStore(config.path).bot['web_search_enabled'] is False
@@ -301,6 +329,30 @@ def main() -> int:
         sample_target = {"id": "test", "name": "文件传输助手", "type": "friend",
                          "enabled": True, "persona_id": "arona", "require_at": True,
                          "context_limit": 30, "reply_probability": 1.0, "note": ""}
+        global_voice = config.bot['voice_name']
+        persona_dialog = PersonaDialog(root, app.pages['personas'], personas.get('plana'))
+        persona_dialog.voice_preset.set(next(k for k, v in persona_dialog._voice_choices.items() if v == 'plana'))
+        persona_dialog.voice_rate.set('-12%')
+        persona_dialog.voice_volume.set('-4')
+        persona_dialog.address_template.set('{nickname}博士')
+        persona_dialog._save()
+        saved_persona = PersonaStore(personas.path).get('plana')
+        assert saved_persona['voice_preset_id'] == 'plana'
+        assert saved_persona['voice_rate'] == '-12%' and saved_persona['voice_volume'] == '-4%'
+        assert saved_persona['address_template'] == '{nickname}博士'
+        assert config.bot['voice_name'] == global_voice
+        for identity in ('same_a', 'same_b'):
+            personas.upsert({'id':identity,'name':'同名角色','system_prompt':'自然回复。'})
+        page_targets._refresh_personas()
+        page_targets.persona_combo.current(page_targets._persona_ids.index('same_b'))
+        page_targets._refresh_personas()
+        assert page_targets._persona_ids[page_targets.persona_combo.current()] == 'same_b'
+        duplicate_target = config.add_target('同名角色选择验证', 'group', persona_id='same_b')
+        duplicate_dialog = TargetDialog(root, page_targets, duplicate_target)
+        assert duplicate_dialog._persona_ids[duplicate_dialog.persona.current()] == 'same_b'
+        assert len(set(duplicate_dialog.persona['values'])) == len(duplicate_dialog.persona['values'])
+        duplicate_dialog._save()
+        assert config.target_by_name('同名角色选择验证')['persona_id'] == 'same_b'
         dialogs = [
             ("voice", lambda: VoicePresetDialog(root, service.voice_presets.get('arona'), lambda value: None)),
             ("sticker", lambda: StickerDialog(root, app.pages["stickers"], None)),

@@ -81,6 +81,8 @@ DEFAULT_CONFIG = {
         "idle_video_topics": ["蔚蓝档案"],
         "idle_video_probability": 1.0,
         "idle_video_manual_chat": "test",
+        "share_images_direct": True,
+        "share_web_screenshots": True,
         "group_at_include_self_name": True,
         "stale_reply_minutes": 10,
         "quote_reply": False,
@@ -92,6 +94,9 @@ DEFAULT_CONFIG = {
         "natural_voice": True,
         "read_links": True,
         "web_search_enabled": True,
+        "agent_enabled": True,
+        "agent_max_steps": 4,
+        "agent_timeout_seconds": 90,
         "web_search_test_query": "Python 装饰器",
         "trigger_semantic_check": True,
         "replace_punctuation": False,
@@ -142,6 +147,8 @@ def now_iso() -> str:
 
 
 ARONA_PERSONA = {
+    "address_template": "",
+    "voice_preset_id": "", "voice_rate": "", "voice_pitch": "", "voice_volume": "",
     "id": "arona",
     "name": "阿洛娜",
     "name_en": "Arona",
@@ -210,6 +217,8 @@ ARONA_PERSONA = {
 }
 
 PLANA_PERSONA = {
+    "address_template": "",
+    "voice_preset_id": "", "voice_rate": "", "voice_pitch": "", "voice_volume": "",
     "id": "plana",
     "name": "普拉娜",
     "name_en": "Plana",

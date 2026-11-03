@@ -20,6 +20,7 @@ from ...ui.widgets import (
     confirm,
 )
 from .base import BasePage
+from ..persona_labels import persona_labels
 
 log = logging.getLogger(__name__)
 
@@ -53,15 +54,13 @@ class TargetDialog(BaseDialog):
         persona_frame.grid(row=0, column=1, sticky="ew", padx=(px(6), 0))
         tk.Label(persona_frame, text="使用人格", bg=C["card"], fg=C["text_soft"],
                  font=font(9, "bold")).pack(anchor="w", pady=(0, px(4)))
-        self.persona = ttk.Combobox(persona_frame, values=[p.get("name", "") for p in
-                                                           page.personas.list()],
-                                    state="readonly", style="Arona.TCombobox", font=font(9))
-        self.persona.pack(fill="x")
-        persona_names = [p.get("name", "") for p in page.personas.list()]
-        current_persona = next((p for p in page.personas.list()
-                                if p.get("id") == target.get("persona_id")), None)
-        self.persona.set(current_persona.get("name", "阿洛娜") if current_persona else
-                         (persona_names[0] if persona_names else "阿洛娜"))
+        people = page.personas.list()
+        self._persona_ids = [p['id'] for p in people]
+        self.persona = ttk.Combobox(persona_frame, values=persona_labels(people), state='readonly',
+                                    style='Arona.TCombobox', font=font(9))
+        self.persona.pack(fill='x')
+        selected = target.get('persona_id') or page.config.data.get('active_persona_id')
+        self.persona.current(self._persona_ids.index(selected) if selected in self._persona_ids else 0)
         ctx_frame = tk.Frame(body, bg=C["card"])
         ctx_frame.pack(fill="x", pady=(0, px(10)))
         self.context = LabeledEntry(ctx_frame, "上下文条数（至少 20）",
@@ -131,9 +130,8 @@ class TargetDialog(BaseDialog):
         except ValueError:
             self.error.configure(text="上下文条数和回复概率必须是数字。")
             return
-        persona_name = self.persona.get()
-        persona_id = next((p.get("id") for p in self.page.personas.list()
-                           if p.get("name") == persona_name), "arona")
+        index = self.persona.current()
+        persona_id = self._persona_ids[index] if 0 <= index < len(self._persona_ids) else self.page.config.data.get('active_persona_id', 'arona')
         try:
             self.page.config.update_target(self.target["id"], {
                 "name": name,
@@ -368,14 +366,16 @@ class TargetsPage(BasePage):
         self.app.toast(message, "success" if data.get("ok") else "warn")
 
     def _refresh_personas(self) -> None:
+        old_index = self.persona_combo.current()
+        selected = self._persona_ids[old_index] if 0 <= old_index < len(self._persona_ids) else None
         people = self.personas.list()
         self._persona_ids = [p["id"] for p in people]
-        names = [p.get("name", "未命名") for p in people]
+        names = persona_labels(people)
         self.persona_combo.configure(values=names)
         active = self.config.data.get("active_persona_id")
-        index = self._persona_ids.index(active) if active in self._persona_ids else 0
-        if self.persona_combo.current() < 0:
-            self.persona_combo.current(index)
+        selected = selected if selected in self._persona_ids else active
+        index = self._persona_ids.index(selected) if selected in self._persona_ids else 0
+        self.persona_combo.current(index)
 
     def refresh(self) -> None:
         self._refresh_personas()
@@ -406,9 +406,8 @@ class TargetsPage(BasePage):
         if not name:
             self.add_error.configure(text="请填写微信显示名称。")
             return
-        persona_name = self.persona_combo.get()
-        persona_id = next((p["id"] for p in self.personas.list()
-                           if p.get("name") == persona_name), "arona")
+        index = self.persona_combo.current()
+        persona_id = self._persona_ids[index] if 0 <= index < len(self._persona_ids) else self.config.data.get('active_persona_id', 'arona')
         try:
             self.config.add_target(
                 name, "group" if self.type_combo.get() == "群聊" else "friend",

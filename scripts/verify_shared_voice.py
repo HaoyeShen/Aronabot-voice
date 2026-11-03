@@ -22,7 +22,7 @@ from app.wechat_adapter import WeChatAutoAdapter, IncomingMessage
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', choices=['link', 'preview', 'voice', 'requested-voice', 'alias-identity', 'semantic', 'quote', 'news-test', 'idle-chat', 'idle-video', 'manual-video', 'manual-article', 'manual-image'])
+    parser.add_argument('mode', choices=['link', 'preview', 'voice', 'requested-voice', 'alias-identity', 'semantic', 'quote', 'news-test', 'idle-chat', 'idle-video', 'manual-video', 'manual-article', 'manual-image', 'manual-screenshot'])
     parser.add_argument('--no-send', action='store_true')
     parser.add_argument('--preset', default='', help='Voice preset for the test-only voice check')
     parser.add_argument('--chat-name', help='Read-only alias identity check: original group name')
@@ -103,7 +103,7 @@ def main():
             service._adapter = adapter
             service._running = True
             try:
-                if args.mode in ('manual-article', 'manual-image'):
+                if args.mode in ('manual-article', 'manual-image', 'manual-screenshot'):
                     from unittest.mock import patch
                     from app.proactive_share import ProactiveArticles
                     source = config.target_by_name('test') or {}
@@ -114,7 +114,7 @@ def main():
                     service._sync_idle_groups(adapter)
                     user = next(iter(adapter.target_usernames()))
                     before = adapter._last_seq(user)
-                    decision = 'IMAGE' if args.mode == 'manual-image' else 'ARTICLE'
+                    decision = {'manual-image':'IMAGE', 'manual-screenshot':'SCREENSHOT'}.get(args.mode, 'ARTICLE')
                     with patch.object(service, '_proactive_decision', return_value=decision):
                         service._idle_tick()
                     state = service._idle_chats['test']
@@ -122,13 +122,17 @@ def main():
                         print('PUBLIC_SHARE_UNAVAILABLE_NO_MESSAGE_SENT')
                         return 1
                     bubbles = memory.recent('test', 1)[-1]['meta']['bubbles']
+                    media = memory.recent('test', 1)[-1]['meta'].get('web_media')
+                    if decision in ('IMAGE', 'SCREENSHOT'):
+                        assert media, 'media generation/sending failed; link fallback was used'
                     assert 2 == len(bubbles) and bubbles[0].startswith(('https://', 'http://'))
                     assert len(bubbles[1]) <= 15
                     for _ in range(12):
                         rows = adapter._db.get_messages(user, limit=10)
                         matched = [row for row in rows if int(row.get('sort_seq', 0)) > before
                                    and str(row.get('sender_username') or '') == adapter.self_wxid
-                                   and str(row.get('content') or '').strip() in bubbles]
+                                   and (str(row.get('content') or '').strip() in (bubbles[1:] if media else bubbles)
+                                        or (media and adapter._message_type_name(row.get('type')) == 'image'))]
                         if len(matched) == len(bubbles):
                             print('PUBLIC_SHARE_KIND', decision)
                             print('PUBLIC_SHARE_OUTGOING_DB_CONFIRMED', True)

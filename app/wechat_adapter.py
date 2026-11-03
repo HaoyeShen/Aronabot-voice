@@ -9,6 +9,7 @@ disabled; only the message database, UIA controls, and the clipboard are used.
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import logging
 import re
 import os
@@ -139,6 +140,9 @@ class BaseWeChatAdapter:
 
     def canonical_chat(self, chat: str) -> str:
         return str(chat or "").strip()
+
+    def chat_identity(self, chat: str) -> str:
+        return self.canonical_chat(chat)
 
     def is_same_chat(self, current: str, expected: str) -> bool:
         return bool(current and expected and current.strip() == expected.strip())
@@ -551,6 +555,24 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
                 return username
         return "群友" if target.get("type") == "group" else target.get("name", "")
 
+    @staticmethod
+    def _message_external_id(username: str, row: dict) -> str:
+        """Local row numbers can be reused after a database rebuild or restore.
+
+        Use fields present in both history and listener rows, so importing
+        history and receiving the same event still produce the same identity.
+        """
+        def number(key):
+            try:
+                return int(row.get(key) or 0)
+            except (ValueError, TypeError, OverflowError):
+                return 0
+        sequence, timestamp = number('sort_seq'), number('create_time')
+        if not sequence and not timestamp:
+            raw = f"{username}\x1f{row.get('sender_username', '')}\x1f{row.get('content', '')}"
+            return 'fp:' + hashlib.sha256(raw.encode('utf-8', 'replace')).hexdigest()
+        return f"wxdb:v2:{username}:{row.get('shard', '')}:{row.get('local_id', '')}:{sequence}:{timestamp}"
+
     def _map_message(self, msg: dict, target: dict, chat_name: str) -> IncomingMessage:
         username = str(msg.get("username") or "")
         sender_username = str(msg.get("sender_username") or "")
@@ -561,7 +583,7 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
         if not sender_username and username == "filehelper":
             outgoing = True
         sender = self._display_sender(sender_username, target, outgoing)
-        ext = f"wxdb:{username}:{msg.get('shard', '')}:{msg.get('local_id', '')}"
+        ext = self._message_external_id(username, msg)
         return IncomingMessage(
             chat=chat_name,
             sender=sender,
@@ -681,6 +703,9 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
         username = self._usernames.get(chat) or self._resolve_username(chat)
         target = self._targets_by_user.get(username) if username else None
         return str(target["name"]) if target else chat
+
+    def chat_identity(self, chat: str) -> str:
+        return self._usernames.get(chat) or self._resolve_username(chat) or ''
 
     def is_same_chat(self, current: str, expected: str) -> bool:
         if not current or not expected:
@@ -899,7 +924,7 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
                 content=str(row.get("content") or ""),
                 role="assistant" if outgoing else "user",
                 msg_type=self._message_type_name(row.get("type")),
-                external_id=f"wxdb:{username}:{row.get('shard', '')}:{row.get('local_id', '')}",
+                external_id=self._message_external_id(username, row),
                 attr="self" if outgoing else "friend",
                 direction="out" if outgoing else "in",
                 origin="self" if outgoing else "friend",

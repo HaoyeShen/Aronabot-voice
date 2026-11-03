@@ -17,6 +17,7 @@ from ...ui.widgets import (
     ToggleRow,
 )
 from .base import BasePage
+from ..persona_labels import persona_labels
 
 
 class ChatView(tk.Frame):
@@ -293,7 +294,7 @@ class DebugPage(BasePage):
     def _refresh_personas(self) -> None:
         personas = self.personas.list()
         self._persona_ids = [p["id"] for p in personas]
-        labels = [p.get("name", "未命名") for p in personas]
+        labels = persona_labels(personas)
         self.persona_combo.configure(values=labels)
         active = self.config.data.get("active_persona_id")
         index = self._persona_ids.index(active) if active in self._persona_ids else 0

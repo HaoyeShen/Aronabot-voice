@@ -28,6 +28,7 @@ from app.prompting import (
     parse_reply,
     resolve_sticker,
     select_fallback_sticker,
+    clean_cat_speech,
 )
 from app.secretstore import protect, unprotect
 from app.wechat_adapter import IncomingMessage
@@ -107,15 +108,15 @@ def test_prompt_and_stickers() -> None:
                               ('你吃饭了吗', 'UNKNOWN'), ('昨天他问大家去哪', 'UNKNOWN')]:
         assert_true(group_audience(message, ['阿洛娜']) == expected, 'audience: ' + message)
     assert_true(group_audience('阿洛娜好可爱', ['阿洛娜']) == 'ALL', 'public third-person discussion is eligible')
-    assert_true("绝不能自称" in system and "自称只能用" in compact,
+    assert_true("正确区分自己与对方" in system and "自称与对方称呼遵循当前角色设定" in compact,
                 "self-reference rules present")
     group_system = build_system_prompt(persona, stickers, target_name="测试群",
                                        target_type="group", recipient_name="小明")
-    assert_true("小明老师" in group_system and "微信昵称+老师" in group_system,
+    assert_true("小明" in group_system and "微信昵称+老师" in group_system,
                 "group address rule")
     private_system = build_system_prompt(persona, stickers, target_name="文件传输助手",
                                          target_type="friend", recipient_name="赵军情")
-    assert_true("赵军情老师" in private_system,
+    assert_true("赵军情" in private_system and "微信昵称+老师" in private_system,
                 "private address rule")
     assert_true(reduce_ellipsis("唔……让我想想。") == "唔，让我想想。",
                 "ellipsis is reduced")
@@ -146,10 +147,30 @@ def test_prompt_and_stickers() -> None:
     labelled_reply, _ = parse_reply("[阿洛娜] 老师，告诉老师吧。", stickers)
     assert_true("[阿洛娜]" not in labelled_reply and "告诉我吧" in labelled_reply,
                 "strip speaker label and self-address")
+    for label in ('[阿洛娜]', '【阿洛娜】', '[Arona]', '[普拉娜]', '[Plana]'):
+        cleaned, _ = parse_reply('阿洛娜在查资料呢。' + label + '老师，稍等一下。', stickers,
+                                  max_chars=200, max_sentence_chars=100)
+        assert_true(label not in cleaned and '阿洛娜在查资料呢' in cleaned and '稍等一下' in cleaned,
+                    'strip inline speaker label, preserve ordinary self reference')
     history = [{"role": "user" if i % 2 == 0 else "assistant",
                 "content": f"第 {i} 条"} for i in range(30)]
     messages = build_context_messages(history, min_messages=20)
     assert_true(len(messages) >= 20, "context keeps at least 20")
+    for text in ('喵～老师你好。','早上好喵～','你好呀，喵～','阿洛娜在哦喵。','好开心喵～'):
+        assert_true('喵' not in clean_cat_speech(text), 'unsolicited cat habit removed')
+    for text in ('小喵老师，早上好。','猫的叫声常写作“喵”。','喵是一个拟声词。','猫的叫声是喵。'):
+        assert_true(clean_cat_speech(text)==text,'preserve names and factual mentions')
+    assert_true(clean_cat_speech('喵～',True)=='喵～','explicit cat request preserved')
+    assert_true(not clean_cat_speech('喵～。'),'standalone unsolicited sound becomes empty')
+    for meta in ({'voice_sent': True}, {'send_message': '语音气泡'}):
+        voice_history = build_context_messages([
+            {'role': 'assistant', 'content': '喵～', 'meta': meta}])
+        assert_true('已成功发送语音气泡' in voice_history[0]['content'],
+                    'successful voice and legacy metadata survive into model context')
+    text_history = build_context_messages([
+        {'role': 'assistant', 'content': '喵～', 'meta': {'voice_sent': False, 'send_message': '已发送'}}])
+    assert_true('已成功发送语音气泡' not in text_history[0]['content'],
+                'text fallback must not be described as a successful voice')
     assert_true(messages[-1]["content"] == "第 29 条", "context newest last")
     manual_history = [
         {"role": "user", "sender": "老师", "content": "旧消息",

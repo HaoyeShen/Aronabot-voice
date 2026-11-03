@@ -14,6 +14,8 @@ with tempfile.TemporaryDirectory() as tmp:
     assert config.data['privacy']['screenshots'] and config.data['privacy']['screen_recording']
     assert not config.data['privacy']['wechat_read_screenshots']
     assert not config.data['privacy']['wechat_read_screen_recording']
+    assert not BotService._looks_incomplete_reply('装饰器能给函数加新功能。')
+    assert BotService._looks_incomplete_reply('装饰器能。')
     subject = SimpleNamespace(config=config)
     subject._natural_reply_text = lambda text, *args: text
     subject._looks_incomplete_reply = BotService._looks_incomplete_reply

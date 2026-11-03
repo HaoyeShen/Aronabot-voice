@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Callable
 
 from .config_store import ConfigStore, PersonaStore
+from .model_audit import model_call
+from .agent_runtime import task_entry
 from .model_client import make_client
 from .paths import DATA
 from .prompting import reduce_ellipsis
@@ -346,6 +348,7 @@ class NewsService:
         self._lock = threading.Lock()
         self._fetch_report: dict = {}
         self._source_errors: list[str] = []
+        self.agent_builder = None
 
     # --------------------------------------------------------------- settings
     @property
@@ -784,7 +787,7 @@ class NewsService:
         try:
             profile.update(timeout=min(20, max(5, int(profile.get('timeout', 20) or 20))),
                            max_tokens=220, temperature=0, think=False)
-            result = make_client(profile).chat(
+            result = model_call(make_client(profile), 'chat', '基沃托斯新闻检索词规划', 
                 [{'role': 'user', 'content': f'今天是 {news_now():%Y-%m-%d}，生成近 24 小时的国服、日服、国际服新闻检索词。'}],
                 '你是蔚蓝档案新闻检索助手。仅输出 JSON 对象，键为国服、日服、国际服，'
                 '值各为一个简短搜索词，必须包含蔚蓝档案或其英文、日文名称，'
@@ -811,13 +814,13 @@ class NewsService:
             log.warning('模型生成新闻检索词失败，继续使用已有公开来源：%s', type(exc).__name__)
             return {}
 
-    def fetch(self) -> dict[str, list[NewsItem]]:
+    def fetch(self, model_queries=None) -> dict[str, list[NewsItem]]:
         self._source_errors = []
         settings = self.settings
         timeout = max(5.0, min(20.0, float(settings.get("timeout", 10) or 10)))
         per_region = max(1, min(3, int(settings.get("max_items", 2) or 2)))
         fetch_limit = max(per_region, min(6, per_region * 3))
-        model_queries = self._model_search_queries()
+        model_queries = self._model_search_queries() if model_queries is None else model_queries
         result: dict[str, list[NewsItem]] = {region[0]: [] for region in self.REGIONS}
         sites = {
             '国服': '蔚蓝档案 (site:taptap.cn OR site:news.17173.com OR site:3dmgame.com OR site:gamersky.com) 公告 更新',
@@ -928,7 +931,7 @@ class NewsService:
                             suffix = ".jpg"
                         path = cache_dir / f"news_{abs(hash(url))}{suffix}"
                         path.write_bytes(raw)
-                        result = ModelClient(profile).describe_image(
+                        result = model_call(ModelClient(profile), 'describe_image', '基沃托斯新闻图片理解', 
                             path,
                             prompt=("请像新闻编辑一样读取这张《蔚蓝档案》图片："
                                     "提取其中所有可读文字，尤其是活动名、角色名、卡池、日期、"
@@ -979,8 +982,8 @@ class NewsService:
             picked = text[:86]
         return picked[:86].rstrip("，,；; ")
 
-    def _fallback_message(self, grouped: dict[str, list[NewsItem]], now: datetime | None = None) -> str:
-        persona = self._persona()
+    def _fallback_message(self, grouped: dict[str, list[NewsItem]], now: datetime | None = None, persona=None) -> str:
+        persona = persona or self._persona()
         name = str(persona.get("name") or "阿洛娜")
         today = (now or news_now()).strftime("%Y年%m月%d日")
         if "普拉娜" in name:
@@ -1011,7 +1014,10 @@ class NewsService:
             if region == '国服' and not any(x.source == '国服官网' for x in items):
                 lines.append('· 国服官网暂时没有可核实的新快讯。')
         lines.extend(["", outro])
-        return "\n".join(lines).strip()
+        text = "\n".join(lines).strip()
+        if name not in ('阿洛娜','普拉娜'):
+            text = text.replace('各位老师','各位')
+        return text
 
     def _availability_note(self) -> str:
         if not self._source_errors:
@@ -1069,7 +1075,7 @@ class NewsService:
                   "今日素材：\n" + "\n".join(facts))
         profile = self.config.active_profile()
         client = make_client(profile)
-        result = client.chat([{"role": "user", "content": prompt}], system)
+        result = model_call(client, 'chat', '基沃托斯新闻概括', [{"role": "user", "content": prompt}], system)
         text = str(result.text or "").strip()
         if len(text) >= 80 and all(mark in text for mark in
                                    ("国服", "日服", "国际服")) and _past_tense_issue(text, now):
@@ -1081,7 +1087,7 @@ class NewsService:
                 "不要出现「将」「会」「预计」「即将」等预测词。只输出修正后的日报。"
             )
             try:
-                corrected = client.chat(
+                corrected = model_call(client, 'chat', '基沃托斯新闻校正', 
                     [{"role": "user", "content": prompt + "\n\n" + correction}],
                     system,
                 )
@@ -1187,6 +1193,7 @@ class NewsService:
         self._save_state({'seen_items_by_chat': by_chat})
 
     # ------------------------------------------------------------------- send
+    @task_entry('每日新闻采集与发送')
     def run(self, adapter, target: dict | None = None,
             now: datetime | None = None, force: bool = False, *, test_mode: bool = False) -> dict:
         """Test sends bypass scheduling and never write production delivery state."""
@@ -1227,17 +1234,20 @@ class NewsService:
                 self._save_state({"attempts": attempts,
                                   "last_attempt_ts": time.time(),
                                   "last_attempt_date": current.date().isoformat()})
-            try:
-                grouped = self.fetch()
-            except Exception as exc:
-                log.warning('新闻采集异常，发送无可核实新消息说明：%s', exc)
-                self._source_errors = ['新闻来源']
-                grouped = {region[0]: [] for region in self.REGIONS}
-            grouped = self._filter_seen(
-                grouped, max(1, min(3, int(self.settings.get("max_items", 2) or 2))), target_name, current
-            )
-            self._enrich_images(grouped)
-            message, usage_result = self.build_message(grouped, current)
+            if self.agent_builder and self.config.active_profile().get('provider') != 'mock':
+                grouped, message, usage_result = self.agent_builder(target, current)
+            else:
+                try:
+                    grouped = self.fetch()
+                except Exception as exc:
+                    log.warning('新闻采集异常，发送无可核实新消息说明：%s', exc)
+                    self._source_errors = ['新闻来源']
+                    grouped = {region[0]: [] for region in self.REGIONS}
+                grouped = self._filter_seen(
+                    grouped, max(1, min(3, int(self.settings.get("max_items", 2) or 2))), target_name, current
+                )
+                self._enrich_images(grouped)
+                message, usage_result = self.build_message(grouped, current)
             if not message:
                 return {"sent": False, "reason": "新闻总结为空"}
             if usage_result is not None and self.usage_callback:
@@ -1246,7 +1256,8 @@ class NewsService:
             checked = self._filter_seen(grouped, 3, target_name, latest)
             if sum(map(len, checked.values())) != sum(map(len, grouped.values())):
                 grouped = checked
-                message = self._fallback_message(grouped, latest)
+                persona = self.personas.get(target.get('persona_id') or self.config.data.get('active_persona_id'))
+                message = self._fallback_message(grouped, latest, persona)
             try:
                 result = adapter.send_text(target_name, message)
             except Exception as exc:
@@ -1279,11 +1290,15 @@ class NewsService:
             return {"sent": True, "target": target_name, "message": message,
                     "usage": usage_result, "no_new_items": not any(grouped.values())}
 
+    @task_entry('新闻预览')
     def preview(self) -> dict:
         """Fetch and render without sending (used by the settings page)."""
-        grouped = self.fetch()
         targets = self.enabled_targets()
         chat = str(targets[0].get('name', '')) if targets else ''
+        if self.agent_builder and self.config.active_profile().get('provider') != 'mock':
+            grouped,message,usage_result = self.agent_builder(targets[0] if targets else {'name':chat},news_now())
+            return {'message':message,'items':grouped,'usage':usage_result}
+        grouped = self.fetch()
         grouped = self._filter_seen(grouped, int(self.settings.get('max_items', 2)), chat)
         self._enrich_images(grouped)
         message, usage_result = self.build_message(grouped)

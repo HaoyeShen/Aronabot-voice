@@ -1,4 +1,4 @@
-﻿param(
+param(
     [switch]$Console,
     [switch]$InstallOnly
 )
@@ -13,9 +13,9 @@ $env:TMP = $LocalTemp
 $Venv = Join-Path $Root ".venv"
 $VenvPython = Join-Path $Venv "Scripts\python.exe"
 $VenvPythonW = Join-Path $Venv "Scripts\pythonw.exe"
-$IconExe = Join-Path $Venv "Scripts\ARONA.exe"
+$IconExe = Join-Path $Venv "Scripts\什亭之匣.exe"
 
-function Show-Message([string]$Text, [string]$Title = "ARONA") {
+function Show-Message([string]$Text, [string]$Title = "什亭之匣") {
     Write-Host ""
     Write-Host "  $Title" -ForegroundColor Cyan
     Write-Host "  $Text" -ForegroundColor Yellow
@@ -71,13 +71,13 @@ function Find-Python {
 }
 
 Write-Host ""
-Write-Host "  ARONA // SCHALE AUTO ASSISTANT" -ForegroundColor Cyan
+Write-Host "  什亭之匣 // SHITTIM CHEST" -ForegroundColor Cyan
 Write-Host "  ------------------------------------------------" -ForegroundColor DarkCyan
 Write-Host "  正在准备本地运行环境…" -ForegroundColor Gray
 
 $basePython = Find-Python
 if (-not $basePython) {
-    Show-Message "没有找到可用的 64 位 Python 3.9–3.12。`n`n请安装 Python 3.12（安装时勾选 Add python.exe to PATH）：`nhttps://www.python.org/downloads/`n`n安装完成后重新双击「启动 ARONA.bat」。"
+    Show-Message "没有找到可用的 64 位 Python 3.9–3.12。`n`n请安装 Python 3.12（安装时勾选 Add python.exe to PATH）：`nhttps://www.python.org/downloads/`n`n安装完成后重新双击「启动 什亭之匣.bat」。"
     exit 1
 }
 Write-Host "  使用 Python: $basePython" -ForegroundColor DarkGray
@@ -149,7 +149,7 @@ if ($tkMissing) {
 }
 
 if ($InstallOnly) {
-    Write-Host "  依赖安装完成。现在可以双击「启动 ARONA.bat」。" -ForegroundColor Green
+    Write-Host "  依赖安装完成。现在可以双击「启动 什亭之匣.bat」。" -ForegroundColor Green
     exit 0
 }
 
@@ -157,13 +157,13 @@ if ($InstallOnly) {
 # executable icon for the taskbar, so a plain pythonw.exe launch still shows
 # the Python icon even when Tk's iconphoto is set.
 if (-not (Test-Path -LiteralPath $IconExe) -or
-    -not (Test-Path -LiteralPath (Join-Path $Venv "Scripts\ARONA.iconv2"))) {
+    -not (Test-Path -LiteralPath (Join-Path $Venv "Scripts\什亭之匣.iconv3"))) {
     try {
         & $VenvPython (Join-Path $Root "scripts\make_icon_exe.py") 1>$null 2>$null
     } catch {}
 }
 
-Write-Host "  启动 ARONA…" -ForegroundColor Green
+Write-Host "  启动什亭之匣…" -ForegroundColor Green
 if ($Console) {
     & $VenvPython (Join-Path $Root "run.py")
     exit $LASTEXITCODE

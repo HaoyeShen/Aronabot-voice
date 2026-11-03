@@ -198,7 +198,7 @@ class HomePage(BasePage):
         minor_h = int(h*.20)
         y = max(px(26), int(h*.055))
         rows = [('dashboard', 'listen_reply'), ('targets', 'stickers', 'personas'),
-                ('training', 'models', 'debug'), ('monitor', 'logs', 'settings')]
+                ('training', 'models', 'debug'), ('monitor', 'agent', 'logs', 'settings')]
         for ri, keys in enumerate(rows):
             th = major_h if ri == 0 else (px(49) if ri == 3 else minor_h)
             tw = (usable-gap*(len(keys)-1))//len(keys)

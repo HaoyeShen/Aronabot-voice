@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+import math
 import tkinter as tk
+from tkinter import ttk
 import uuid
 
 from ...ui.theme import C, display_font, font, mix, px, truncate
@@ -27,7 +29,7 @@ def examples_to_text(examples: list[dict], name: str = "阿洛娜") -> str:
         user = str(item.get("user", "")).strip()
         assistant = str(item.get("assistant", "")).strip()
         if user and assistant:
-            blocks.append(f"老师：{user}\n{name}：{assistant}")
+            blocks.append(f"用户：{user}\n{name}：{assistant}")
     return "\n\n".join(blocks)
 
 
@@ -76,7 +78,7 @@ class PersonaDialog(BaseDialog):
                                    width=40)
         self.source.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, px(8)))
         self.description = LabeledText(form, "角色背景", (persona or {}).get("description", ""),
-                                       height=3, hint="她是谁、和老师的关系")
+                                       height=3, hint="角色是谁、与对方的关系")
         self.description.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, px(8)))
         self.tone = LabeledText(form, "语气与性格", (persona or {}).get("tone", ""),
                                 height=2, hint="温柔 / 元气 / 毒舌…")
@@ -102,11 +104,46 @@ class PersonaDialog(BaseDialog):
         self.examples = LabeledText(
             form, "对话示例（可选）", examples_to_text((persona or {}).get("examples", []),
                                                        (persona or {}).get("name", "阿洛娜")),
-            height=5, hint="每段：老师：… / 角色：…，空行分隔")
+            height=5, hint="每段：用户：… / 角色：…，空行分隔")
         self.examples.grid(row=10, column=0, columnspan=2, sticky="ew", pady=(0, px(4)))
         self.error = tk.Label(form, text="", bg=C["card"], fg=C["red"], font=font(8),
                               anchor="w")
         self.error.grid(row=11, column=0, columnspan=2, sticky="ew", pady=(px(4), px(8)))
+        # Keep the existing form layout; insert the role-specific voice controls
+        # directly after the source field.
+        for widget in list(form.grid_slaves()):
+            row = int(widget.grid_info()['row'])
+            if row >= 3:
+                widget.grid_configure(row=row + 2)
+        voices = page.service.voice_presets.list()
+        self._voice_choices = {'跟随全局音色': ''}
+        self._voice_choices.update({f"{v['label']} · {v['id']}": v['id'] for v in voices})
+        selected = str((persona or {}).get('voice_preset_id') or '')
+        if selected and selected not in self._voice_choices.values():
+            self._voice_choices[f'已删除音色 · {selected}（发送时跟随全局）'] = selected
+        voice_box = tk.Frame(form, bg=C['card'])
+        voice_box.grid(row=3, column=0, columnspan=2, sticky='ew', pady=(0, px(8)))
+        tk.Label(voice_box, text='角色语音音色', bg=C['card'], fg=C['text'], font=font(8)).pack(anchor='w')
+        self.voice_preset = ttk.Combobox(voice_box, values=list(self._voice_choices),
+                                        state='readonly', style='Arona.TCombobox', font=font(8))
+        self.voice_preset.set(next(k for k, v in self._voice_choices.items() if v == selected))
+        self.voice_preset.pack(fill='x', pady=px(4))
+        tk.Label(voice_box, text='音色在「监听与回复」管理；以下参数仅对此角色生效，留空沿用音色参数。角色模型忽略音调。',
+                 bg=C['card'], fg=C['muted'], font=font(7), wraplength=px(620), justify='left').pack(anchor='w')
+        voice_params = tk.Frame(form, bg=C['card'])
+        voice_params.grid(row=4, column=0, columnspan=2, sticky='ew', pady=(0, px(8)))
+        for key, label in [('rate', '语速（%）'), ('pitch', '音调（Hz）'), ('volume', '音量（%）')]:
+            entry = LabeledEntry(voice_params, label, (persona or {}).get('voice_' + key, ''), width=12)
+            entry.pack(side='left', expand=True, fill='x', padx=px(3))
+            setattr(self, 'voice_' + key, entry)
+        for widget in list(form.grid_slaves()):
+            row = int(widget.grid_info()['row'])
+            if row >= 5:
+                widget.grid_configure(row=row + 1)
+        self.address_template = LabeledEntry(form, '对他人的称呼（可选）',
+            (persona or {}).get('address_template', ''),
+            hint='留空遵循角色设定。例如：博士、{nickname}博士、{nickname}', width=40)
+        self.address_template.grid(row=5, column=0, columnspan=2, sticky='ew', pady=(0, px(8)))
         self.add_footer("取消", self.close, "secondary", 90)
         self.add_footer("保存人格", self._save, "primary", 110)
 
@@ -119,6 +156,26 @@ class PersonaDialog(BaseDialog):
             self.error.configure(text="请至少填写角色背景或核心设定，否则模型不知道她是谁。")
             return
         data = dict(self.persona or {})
+        voice_fields = {'voice_preset_id': self._voice_choices[self.voice_preset.get()]}
+        try:
+            for key, suffix in [('rate', '%'), ('pitch', 'Hz'), ('volume', '%')]:
+                value = getattr(self, 'voice_' + key).get().strip()
+                if value:
+                    number = float(value.removesuffix(suffix))
+                    limit = 50 if key == 'rate' else (100 if key == 'volume' else 1000)
+                    if not math.isfinite(number) or not -limit <= number <= limit:
+                        raise ValueError
+                    value = f'{number:+g}{suffix}'
+                voice_fields['voice_' + key] = value
+        except ValueError:
+            self.error.configure(text='语音参数格式不正确：语速 -50～50%，音量 -100～100%，音调 -1000～1000Hz。')
+            return
+        data.update(voice_fields)
+        template = self.address_template.get().strip()
+        if '{' in template.replace('{nickname}', '') or '}' in template.replace('{nickname}', ''):
+            self.error.configure(text='称呼格式只支持 {nickname} 作为微信昵称占位符，也可以填写固定称呼。')
+            return
+        data['address_template'] = template
         data.update({
             "id": data.get("id") or "persona_" + uuid.uuid4().hex[:8],
             "name": name,
@@ -279,7 +336,7 @@ class PersonasPage(BasePage):
             "description": "",
             "tone": "",
             "speech_style": "",
-            "system_prompt": "你是老师的专属助手。请用自然、简洁的微信口吻回应老师。",
+            "system_prompt": "请遵循角色身份及关系设定，以自然、简洁的微信口吻回应对方。",
             "boundaries": "不提供违法或危险帮助；不冒充真人。",
             "catchphrases": [],
             "sticker_guidance": "在轻松、开心的对话里可以偶尔使用表情包。",
@@ -298,7 +355,7 @@ class PersonasPage(BasePage):
         self.config.data["active_persona_id"] = persona["id"]
         self.config.save()
         self.refresh()
-        self.app.toast(f"默认人格已切换为「{persona.get('name')}」。", "success")
+        self.app.toast(f"默认人格已切换为「{persona.get('name')}」。群聊独立人格可在「测试对象」中调整。", "success")
 
     def delete(self, persona: dict) -> None:
         if len(self.personas.list()) <= 1:

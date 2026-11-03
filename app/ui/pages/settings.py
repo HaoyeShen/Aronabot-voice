@@ -233,7 +233,7 @@ class SettingsPage(BasePage):
 
         about = Card(wrap, padding=16, bg=C["sidebar"], border=False)
         about.pack(fill="x", pady=(px(12), 0))
-        tk.Label(about.body, text=f"ARONA  v{__version__}", bg=C["sidebar"], fg="white",
+        tk.Label(about.body, text=f"什亭之匣  v{__version__}", bg=C["sidebar"], fg="white",
                  font=display_font(11, "bold"), anchor="w").pack(fill="x")
         tk.Label(about.body,
                  text="什亭之匣桌面助手 · 微信信息通过本地数据库读取，发送使用 Windows UI Automation。\n"
