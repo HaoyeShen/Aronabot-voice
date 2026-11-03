@@ -123,7 +123,8 @@ def main():
                                vits_weights='models/arona/arona_e8_s232.pth')
             path = root / ('profile.json' if character == 'plana' else 'profiles/arona.json')
             path.write_text(json.dumps(profile), encoding='utf-8')
-            with patch.object(worker, 'ROOT', root):
+            # Exercise equivalent noncanonical paths without local model files.
+            with patch.object(worker, 'ROOT', root / '..' / root.name):
                 loaded = load_reference(character)
                 assert loaded['reference_audio'] == str(ref.resolve())
                 assert loaded['transcript'] == f'我是{character}'

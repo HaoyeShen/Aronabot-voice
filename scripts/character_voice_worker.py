@@ -24,7 +24,10 @@ ROOT = Path(os.environ.get('ARONA_CHARACTER_VOICE_ROOT',
 def load_reference(character='plana'):
     if character not in ('arona', 'plana'):
         raise ValueError('unknown character profile')
-    path = ROOT / 'profile.json' if character == 'plana' else ROOT / 'profiles' / f'{character}.json'
+    # Windows TEMP can use an 8.3 alias or a junction. Compare both paths in
+    # their resolved form, while keeping the same directory containment rule.
+    root = ROOT.resolve()
+    path = root / 'profile.json' if character == 'plana' else root / 'profiles' / f'{character}.json'
     reference = json.loads(path.read_text(encoding='utf-8'))
     if not reference.get('transcript') or reference.get('character') != character:
         raise ValueError('invalid character reference profile')
@@ -37,8 +40,8 @@ def load_reference(character='plana'):
         value = reference.get(field, default)
         if not value:
             raise ValueError('missing character asset')
-        asset = (ROOT / value).resolve()
-        if not asset.is_relative_to(ROOT) or not asset.is_file():
+        asset = (root / value).resolve()
+        if not asset.is_relative_to(root) or not asset.is_file():
             raise ValueError('invalid character asset')
         reference[field] = str(asset)
     if hashlib.sha256(Path(reference['reference_audio']).read_bytes()).hexdigest() != reference['reference_sha256']:
