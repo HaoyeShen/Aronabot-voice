@@ -403,6 +403,11 @@ class ListenReplyPage(BasePage):
             "读取公开网页，正文与来源加入本地训练；关闭后仍保留已学资料。",
             self.config.bot.get("web_search_enabled", True))
         self.web_search_enabled.pack(fill="x", pady=px(4))
+        self.baidu_baike_enabled = ToggleRow(
+            network.body, '同时搜索百度百科',
+            '保留原网页搜索来源，增加百科词条；百科无法访问时继续使用其他网页。',
+            self.config.bot.get('baidu_baike_enabled',True))
+        self.baidu_baike_enabled.pack(fill='x',pady=px(4))
         self.agent_enabled = ToggleRow(
             network.body, "Agent 自主使用工具",
             "AI 功能统一由 Agent 调度并记录；此开关控制普通回复是否自主追加工具轮次，关闭后单步回答。",
@@ -753,6 +758,7 @@ class ListenReplyPage(BasePage):
             "natural_voice": self.natural_voice.get(),
             "read_links": self.read_links.get(),
             "web_search_enabled": self.web_search_enabled.get(),
+            "baidu_baike_enabled": self.baidu_baike_enabled.get(),
             "agent_enabled": self.agent_enabled.get(),
             "agent_max_steps": agent_max_steps,
             "agent_timeout_seconds": agent_timeout,

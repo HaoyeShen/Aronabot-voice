@@ -27,6 +27,23 @@ from .model_audit import audit, audited
 
 log = logging.getLogger(__name__)
 
+
+def cache_usage(raw):
+    """Record provider-reported cache counts; missing is unknown, not zero."""
+    hit=raw.get('prompt_cache_hit_tokens')
+    if hit is None:
+        details=raw.get('prompt_tokens_details')
+        hit=details.get('cached_tokens') if isinstance(details,dict) else None
+    if hit is None:
+        return {}
+    try:
+        prompt=max(0,int(raw.get('prompt_tokens',0)))
+        hit=max(0,min(prompt,int(hit)))
+        miss=max(0,min(prompt-hit,int(raw.get('prompt_cache_miss_tokens',prompt-hit))))
+    except (TypeError,ValueError):
+        return {}
+    return {'cache_hit':hit,'cache_miss':miss}
+
 USD_CNY_RATE = 7.2
 
 # A local CPU model can only generate one request at a time efficiently.  The
@@ -331,7 +348,7 @@ class ModelClient:
             text = content or ""
             usage_raw = data.get("usage") or {}
             usage = {"prompt": usage_raw.get("prompt_tokens", 0),
-                     "completion": usage_raw.get("completion_tokens", 0)}
+                     "completion": usage_raw.get("completion_tokens", 0),**cache_usage(usage_raw)}
         else:
             raise ModelError(f"不支持的模型提供方：{self.provider}")
 
@@ -499,7 +516,7 @@ class ModelClient:
             text = content if isinstance(content, str) else ""
             raw_usage = data.get("usage") or {}
             usage = {"prompt": raw_usage.get("prompt_tokens", 0),
-                     "completion": raw_usage.get("completion_tokens", 0)}
+                     "completion": raw_usage.get("completion_tokens", 0),**cache_usage(raw_usage)}
         else:
             raise ModelError("当前提供方不支持图片理解")
         text = (text or "").strip()

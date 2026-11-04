@@ -13,7 +13,7 @@ from .base import BasePage
 
 class AgentChatPage(BasePage):
     key, title = 'agent', 'Agent 对话'
-    subtitle = '同一任务中的程序输入、Agent 回答和工具结果，按发生顺序展示。'
+    subtitle = '每个聊天一段连续 Agent 会话，回复、新闻、分享和工具过程都在同一处。'
 
     def __init__(self, parent, app):
         super().__init__(parent,app)
@@ -29,6 +29,7 @@ class AgentChatPage(BasePage):
         self.agent_select.pack(side='left',padx=(0,px(8)))
         self.agent_select.bind('<<ComboboxSelected>>',lambda _:self.refresh())
         self._agent_ids = {}
+        self._last_agent = None
         RoundedButton(toolbar,text='本机试聊',command=lambda:app.show_page('debug'),
                       width=90,height=32,style='secondary',bg=C['bg']).pack(side='right')
         RoundedButton(toolbar,text='跟随最新',command=self.follow_latest,
@@ -41,7 +42,7 @@ class AgentChatPage(BasePage):
         self.status.pack(side='left',padx=px(10))
         body=tk.Frame(self,bg=C['bg']);body.pack(fill='both',expand=True)
         left=Card(body,padding=8);left.pack(side='left',fill='y',padx=(0,px(10)))
-        tk.Label(left.body,text='任务会话',bg=C['card'],fg=C['text'],font=font(10,'bold')).pack(anchor='w',pady=px(5))
+        tk.Label(left.body,text='会话中的任务',bg=C['card'],fg=C['text'],font=font(10,'bold')).pack(anchor='w',pady=px(5))
         self.tasks=tk.Listbox(left.body,width=25,bg=C['card'],fg=C['text'],relief='flat',
                               selectbackground=C['cyan_deep'],selectforeground='white',font=font(8),exportselection=False)
         self.tasks.pack(fill='both',expand=True)
@@ -83,6 +84,7 @@ class AgentChatPage(BasePage):
 
     def follow_latest(self):
         self._follow = True
+        self._selected = '__all__'
         self.refresh()
 
     def _full(self,text):
@@ -103,26 +105,34 @@ class AgentChatPage(BasePage):
         self._agent_ids={'全部聊天 Agent':''}
         self._agent_ids.update({f"{a['chat']} · {a['id'][:6]}":a['id'] for a in agents})
         self.agent_select.configure(values=list(self._agent_ids))
-        self.agent_select.set(previous if previous in self._agent_ids else '全部聊天 Agent')
+        default_agent = next((k for k,v in self._agent_ids.items() if v), '全部聊天 Agent')
+        self.agent_select.set(previous if previous in self._agent_ids else default_agent)
         selected_agent=self._agent_ids[self.agent_select.get()]
+        if selected_agent != self._last_agent:
+            self._selected = '__all__'
+            self._last_agent = selected_agent
         if selected_agent:
             task_ids={e['task_id'] for e in events if e.get('agent_id')==selected_agent}
             events=[e for e in events if e['task_id'] in task_ids]
         sessions={}
         for event in events:
             sessions[event['task_id']]=event
-        self._ids=list(reversed(sessions))[:100]
+        task_ids=list(reversed(sessions))[:100]
+        self._ids=['__all__', *task_ids] if task_ids else []
         if self._follow or self._selected not in self._ids:
             self._selected=self._ids[0] if self._ids else None
         self.tasks.delete(0,'end')
         for identity in self._ids:
+            if identity == '__all__':
+                self.tasks.insert('end','全部任务 · 连续会话')
+                continue
             e=sessions[identity];stamp=datetime.fromtimestamp(e['time']).strftime('%H:%M:%S')
             self.tasks.insert('end',f"{stamp}  {e['label']}\n{e['chat'] or '本机'} · {identity[:6]}")
         if self._selected:
             i=self._ids.index(self._selected);self.tasks.selection_set(i)
         for child in self.bubbles.winfo_children():child.destroy()
-        selected=[e for e in events if e['task_id']==self._selected]
-        self.status.configure(text=f'{len(self._ids)} 个近期任务 · 当前 {len(selected)} 个步骤 · 仅本机可见')
+        selected=[e for e in events if self._selected=='__all__' or e['task_id']==self._selected]
+        self.status.configure(text=f'{len(task_ids)} 项任务 · 当前 {len(selected)} 个步骤 · 同一聊天持续会话')
         for event in selected:
             kind=event['kind']
             if not self._details.get() and kind in ('request','raw_output'):

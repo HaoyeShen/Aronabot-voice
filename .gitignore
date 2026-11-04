@@ -26,6 +26,8 @@ data/proactive_article_state.json
 
 data/voice_presets.json
 data/character_voice/
+data/diaries/
+data/diary_state.json
 /pip-build-env-*/
 /pip-ephem-wheel-cache-*/
 /pip-install-*/

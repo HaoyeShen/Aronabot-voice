@@ -147,11 +147,48 @@ _client = CharacterVoiceClient()
 atexit.register(_client.close)
 
 
+def clarify_voice(samples, sample_rate, strength=0.0):
+    """Gentle tonal cleanup; preserve pitch, timing and every speech sample."""
+    import numpy as np
+    data = np.asarray(samples,dtype=np.float32)
+    strength = float(strength)
+    if not np.isfinite(strength) or not 0<=strength<=1:
+        raise ValueError('音色清晰度必须在 0 到 1 之间')
+    if not strength or not data.size:
+        return data
+    if sample_rate<=0 or not np.isfinite(data).all():
+        raise ValueError('无效的角色音频')
+    rms = float(np.sqrt(np.mean(data.astype(np.float64)**2)))
+    if rms<1e-8:
+        return data.copy()
+    pad = max(32,round(sample_rate*.02))
+    size = 1 << (len(data)+2*pad-1).bit_length()
+    padded = np.pad(data,(pad,size-len(data)-pad))
+    frequency = np.fft.rfftfreq(size,1/sample_rate)
+    safe = np.maximum(frequency,1)
+    # A broad, modest low-mid cut removes the pressed/muffled coloration;
+    # a small presence lift retains consonants without aggressive denoising.
+    low_mid = -2.5*np.exp(-.5*(np.log2(safe/420)/.85)**2)
+    presence = 1.2*np.exp(-.5*(np.log2(safe/2500)/.8)**2)
+    highpass = (1/(1+(80/safe)**4))**(.5*strength)
+    response = highpass*10**(strength*(low_mid+presence)/20)
+    response[0] = 0
+    clean = np.fft.irfft(np.fft.rfft(padded)*response,n=size)[pad:pad+len(data)]
+    clean_rms = float(np.sqrt(np.mean(clean**2)))
+    if clean_rms>1e-8:
+        clean *= min(1.25,rms/clean_rms)
+    peak = float(np.abs(clean).max())
+    if peak>.9:
+        clean *= .9/peak
+    return clean.astype(np.float32)
+
+
 class CharacterTTS:
-    def __init__(self, sample_rate=48000, client=None, *, character='plana'):
+    def __init__(self, sample_rate=48000, client=None, *, character='plana', clarity=0.0):
         self.sample_rate = sample_rate
         self.client = client or _client
         self.character = character
+        self.clarity = clarity
 
     @task_entry('角色语音合成')
     def synthesize(self, text, profile):
@@ -168,6 +205,7 @@ class CharacterTTS:
         samples = np.asarray(decoded.samples, dtype=np.float32)
         if not samples.size or not np.isfinite(samples).all():
             raise RuntimeError('本机角色语音没有可播放音频')
+        samples = clarify_voice(samples,self.sample_rate,self.clarity)
         gain = max(0, min(2, 1 + float(profile.volume.rstrip('%')) / 100))
         samples = samples * gain
         peak = float(np.abs(samples).max())
@@ -200,7 +238,7 @@ def make_tts(preset, config=None):
         if character not in ('arona', 'plana'):
             raise ValueError('未知的本机角色音色')
         return PaddedTTS(CharacterTTS(getattr(config, 'sample_rate', 48000),
-                                      character=character))
+                                      character=character,clarity=preset.get('clarity',0.0)))
     if preset.get('engine', 'edge') != 'edge':
         raise ValueError('未知的语音合成引擎')
     from wecvoice_auto.tts import EdgeTTS

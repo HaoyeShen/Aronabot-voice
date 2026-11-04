@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import os
 import shutil
 import tkinter as tk
@@ -70,6 +71,24 @@ class SettingsPage(BasePage):
         right = tk.Frame(columns, bg=C["bg"])
         right.grid(row=0, column=1, sticky="nsew", padx=(px(7), 0))
 
+        diary = Card(right,padding=16)
+        diary.pack(fill='x',pady=(px(12),0))
+        SectionHeading(diary.body,'阿洛娜的今日日记','每天回顾自己的活动，发布到朋友圈').pack(fill='x',pady=(0,px(8)))
+        self.diary_enabled=self._var('diary_enabled',self.config.bot.get('diary_enabled',True),tk.BooleanVar)
+        ToggleRow(diary.body,'自动发布今日日记',self.diary_enabled,'程序运行并连接微信时生效；默认北京时间22:00').pack(fill='x')
+        self.diary_sticker=self._var('diary_sticker',self.config.bot.get('diary_attach_sticker',True),tk.BooleanVar)
+        ToggleRow(diary.body,'附上一张内置表情包',self.diary_sticker,'仅使用内置图片，不上传私人导入图片').pack(fill='x')
+        self.diary_time=LabeledEntry(diary.body,'发布时间（北京时间）',self.config.bot.get('diary_time','22:00'),hint='HH:MM',width=8)
+        self.diary_time.pack(fill='x',pady=px(6))
+        diary_buttons=tk.Frame(diary.body,bg=C['card'])
+        diary_buttons.pack(fill='x',pady=px(5))
+        RoundedButton(diary_buttons,text='生成 / 查看日记预览',command=self.preview_diary,width=164,height=32).pack(side='left')
+        self.diary_send_btn=RoundedButton(diary_buttons,text='立即发布今日日记',command=self.publish_diary,width=164,height=32)
+        self.diary_send_btn.pack(side='left',padx=(px(6),0))
+        self.diary_preview=tk.Text(diary.body,height=7,wrap='word',font=font(8),bg=C['card_soft'],fg=C['text'],relief='flat')
+        self.diary_preview.insert('1.0','预览只生成本地草稿，不会发布朋友圈。\n不包含群名、微信昵称或聊天原文。')
+        self.diary_preview.configure(state='disabled')
+        self.diary_preview.pack(fill='x')
         context = Card(left, padding=16)
         context.pack(fill="x", pady=(px(12), 0))
         SectionHeading(context.body, "上下文与节奏", "让回复更像真人").pack(fill="x", pady=(0, px(10)))
@@ -250,8 +269,39 @@ class SettingsPage(BasePage):
     def on_show(self) -> None:
         self._load()
 
+    def preview_diary(self):
+        if getattr(self,'_diary_busy',False):return
+        self._diary_busy=True
+        def work():
+            self.service.emit('diary_preview_done',self.service.diary.preview())
+        threading.Thread(target=work,daemon=True).start()
+        self.app.toast('正在整理今日日记，预览不会发布。','info')
+
+    def publish_diary(self):
+        if getattr(self,'_diary_busy',False):return
+        self._diary_busy=True
+        self.diary_send_btn.set_busy(True,'正在发布…')
+        attach=self.diary_sticker.get()
+        def work():
+            result=self.service.diary.publish_now(attach_sticker=attach)
+            self.service.emit('diary_publish_done',result)
+        threading.Thread(target=work,daemon=True).start()
+
+    def on_event(self,kind,data):
+        if kind in ('diary_preview_done','diary_publish_done'):
+            self._diary_busy=False
+            self.diary_send_btn.set_busy(False,'立即发布今日日记')
+            self.diary_preview.configure(state='normal')
+            self.diary_preview.delete('1.0','end')
+            self.diary_preview.insert('1.0',data.get('text') or data.get('message',''))
+            self.diary_preview.configure(state='disabled')
+            self.app.toast(data.get('message','日记已整理'),'success' if data.get('ok') else 'warn')
+        elif kind=='diary_status':
+            self.app.toast(data.get('message','日记状态已更新'),'success' if data.get('ok') else 'warn')
+
     def save(self) -> None:
         try:
+            diary_time=datetime.strptime(self.diary_time.get(),'%H:%M').strftime('%H:%M')
             context_limit = max(20, min(100, int(self.context_limit.get())))
             max_chars = max(8, min(200, int(self.max_chars.get() or 25)))
             bubble_limit = max(1, min(30, int(self.bubble_limit.get() or 20)))
@@ -270,6 +320,8 @@ class SettingsPage(BasePage):
         backend_before = self.config.wechat.get("backend", "auto")
         bot = self.config.bot
         bot.update({
+            'diary_enabled':self.diary_enabled.get(),'diary_time':diary_time,
+            'diary_attach_sticker':self.diary_sticker.get(),
             "context_limit": context_limit,
             "max_reply_chars": max_chars,
             "max_reply_bubbles": bubble_limit,

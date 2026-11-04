@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app.character_voice import CharacterTTS, CharacterVoiceClient, PaddedTTS, make_tts
+from app.character_voice import CharacterTTS, CharacterVoiceClient, PaddedTTS, make_tts, clarify_voice
 from app.voice_presets import VoicePresetStore
 from scripts.character_voice_worker import synthesize, load_reference
 
@@ -26,6 +26,7 @@ def main():
     assert pipeline.request['prompt_text'] == '老师，生物认证完毕。'
     assert pipeline.request['speed_factor'] == .92
     assert pipeline.request['text'] == '老师，我是普拉娜。'
+    assert pipeline.request['top_k']==15 and pipeline.request['temperature']==1
     with wave.open(io.BytesIO(wav)) as handle:
         assert handle.getnchannels() == 1 and handle.getframerate() == 32000
         assert handle.getnframes() == 16000
@@ -43,6 +44,17 @@ def main():
     client.synthesize.assert_called_once_with('你好。', .92, character='plana')
     assert clip.sample_rate == 48000 and abs(clip.duration - .5) < .01
     assert float(abs(clip.samples).max()) <= .90001
+    # Equal loudness, unchanged pitch/duration, less low-mid dominance.
+    sr=48000;t=np.arange(sr,dtype=np.float64)/sr
+    original=(.15*np.sin(2*np.pi*420*t)+.06*np.sin(2*np.pi*2500*t)).astype(np.float32)
+    untouched=original.copy();clean=clarify_voice(original,sr,.75)
+    assert len(clean)==len(original) and np.array_equal(original,untouched)
+    assert np.array_equal(clarify_voice(original,sr,0),original)
+    assert np.isfinite(clean).all() and float(abs(clean).max())<=.90001
+    before=abs(np.fft.rfft(original));after=abs(np.fft.rfft(clean))
+    assert after[420]/after[2500]<.85*(before[420]/before[2500])
+    assert np.argmax(after)==np.argmax(before)==420
+    assert abs(float(np.sqrt(np.mean(clean**2))/np.sqrt(np.mean(original**2)))-1)<.02
     client.synthesize.reset_mock()
     try:
         tts.synthesize('API 已启动。', SimpleNamespace(rate='+0%', volume='+0%'))
@@ -101,6 +113,8 @@ def main():
         assert not isinstance(make_tts(store.get('arona')).backend, CharacterTTS)
         arona = {**store.get('arona'), 'engine': 'gpt_sovits'}
         assert make_tts(arona).backend.character == 'arona'
+        assert make_tts({**arona,'clarity':.75}).backend.clarity==.75
+        assert make_tts(preset).backend.clarity==0,'Plana must retain its original tone'
         with patch.object(client, 'synthesize', return_value=wav) as synth:
             CharacterTTS(client=client, character='arona').synthesize(
                 '你好。', SimpleNamespace(rate='+0%', volume='+0%'))

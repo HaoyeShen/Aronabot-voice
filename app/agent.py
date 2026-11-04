@@ -70,6 +70,7 @@ class AgentTool:
 @dataclass
 class AgentRun:
     task_id: str = field(default_factory=current_task_id)
+    session_id: str = field(default_factory=RUNTIME.session_id)
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     status: str = 'running'
     result: LLMResult | None = None
@@ -79,7 +80,8 @@ class AgentRun:
     error_kind: str = ''
 
     def metadata(self) -> dict:
-        return {'run_id': self.run_id, 'task_id':self.task_id, 'status': self.status,
+        return {'run_id': self.run_id, 'task_id':self.task_id, 'session_id':self.session_id,
+                'conversation_id':self.session_id, 'status': self.status,
                 'model_calls': self.model_calls, 'steps': self.steps, 'summary': self.summary,
                 'error_kind': self.error_kind}
 
@@ -107,11 +109,16 @@ class AgentRunner:
     def run(self, call, messages: list[dict], system: str, tools: list[AgentTool], *,
             max_steps: int = 4, timeout: float = 90, cancelled=lambda: False,
             require_network: bool = False, needs_lookup=lambda _: False,
-            final_format: str = '') -> AgentRun:
+            final_format: str = '', required_tools=()) -> AgentRun:
         run = AgentRun()
         deadline = time.monotonic() + max(1, float(timeout))
         max_steps = max(1, min(8, int(max_steps)))
         registry = {tool.name: tool for tool in tools}
+        required = set(required_tools)
+        if not required.issubset(registry):
+            run.status = 'tool_unavailable'
+            return run
+        completed_tools = set()
         history = [dict(message) for message in messages]
         seen = set()
         network_done = False
@@ -177,12 +184,16 @@ class AgentRunner:
                 if not text:
                     observe({'error': '最终答复不能为空。'})
                     continue
+                if required - completed_tools:
+                    observe({'error':'必须先实际执行本轮要求的资料检索，才能给出结论或声称没有资料。',
+                             'required_tools':sorted(required-completed_tools)})
+                    continue
                 # Some compatible models follow the chat-style instruction
                 # and ask naturally instead of wrapping ask_user in JSON.
                 # Preserve that genuine question as a waiting turn, too.
                 awaiting = action['action'] == 'ask_user' or bool(action.get('plain')
                     and re.search(r'(?:你|老师|哪|多少|什么|是否|能否|可以|要不要|想不想|方便)[^。！？!?]*[？?]', text))
-                if not awaiting and require_network and not network_done:
+                if require_network and not network_done:
                     observe({'error': '尚未执行所要求的联网查询，请调用允许的联网工具；不得假称查过。'})
                     continue
                 if not awaiting and not network_done and not lookup_requested and needs_lookup(text):
@@ -229,6 +240,7 @@ class AgentRunner:
                     return run
                 if tool.network:
                     network_done = True
+                completed_tools.add(tool.name)
                 status = 'ok'
             except Exception as exc:
                 # Never return raw exception text: network errors may contain

@@ -123,6 +123,26 @@ class FakeUIA:
 
 
 def main() -> int:
+    # New WeChat builds leave a recorded voice in a draft until explicitly
+    # submitted. Never click its send action after the conversation changes.
+    draft=[True];invocations=[]
+    def submit():
+        draft[0]=False;invocations.append('voice')
+    button=SimpleNamespace(Exists=lambda *a:draft[0],GetInvokePattern=lambda:SimpleNamespace(Invoke=submit))
+    window=SimpleNamespace(ButtonControl=lambda **kw:button)
+    voice=WeChatAutoAdapter({},lambda _:None)
+    voice._resolve_username=lambda name:'test@chatroom' if name=='test' else 'other@chatroom'
+    voice._uia=SimpleNamespace(current_chat=lambda:'test',_win=window)
+    assert voice.finalize_voice_send('test').ok and invocations==['voice']
+    assert voice.finalize_voice_send('test').ok and invocations==['voice']
+    draft[0]=True
+    button.GetInvokePattern=lambda:SimpleNamespace(Invoke=lambda:None)
+    voice._uia._click_ctrl=lambda ctrl:(submit() or True)
+    assert voice.finalize_voice_send('test').ok and invocations==['voice','voice']
+    draft[0]=True;voice._uia.current_chat=lambda:'其他聊天'
+    assert not voice.finalize_voice_send('test').ok and invocations==['voice','voice']
+    voice._uia=None
+    assert not voice.finalize_voice_send('test').ok
     incoming: list[IncomingMessage] = []
     statuses: list[tuple[str, str]] = []
     adapter = WeChatAutoAdapter({}, lambda msg: incoming.append(msg),

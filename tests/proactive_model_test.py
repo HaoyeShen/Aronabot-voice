@@ -52,12 +52,22 @@ with tempfile.TemporaryDirectory() as tmp:
             service._idle_tick()
             assert not adapter.sent
             assert decision.call_count == 1, 'unchanged context must not repeatedly call the model'
+            memory.add_assistant('test','刚分享的视频及短评')
+            service._idle_tick()
+            assert decision.call_count == 1,'own shares must not wake another sharing decision'
+            state['model_recheck_at']=time.monotonic()-1
+            service._idle_tick()
+            assert decision.call_count == 2,'an Agent-scheduled time must wake an unchanged chat'
+            state['model_recheck_at']=time.monotonic()+600
+            service._idle_tick()
+            assert decision.call_count == 2
         memory.add_user('test', '继续聊活动剧情吧', sender='测试甲')
         with patch.object(config, 'active_profile', return_value={'provider':'openai'}), \
                 patch.object(service, '_proactive_decision', return_value='TEXT'):
             service._idle_tick()
             assert len(adapter.sent) == 1 and adapter.sent[0][0] == 'test'
         adapter.sent.clear()
+        memory.add_user('test','有什么相关的文章吗',sender='测试甲')
         page = SimpleNamespace(url='https://example.org/article', title='主题文章')
         with patch.object(config, 'active_profile', return_value={'provider':'openai'}), \
                 patch.object(service, '_proactive_decision', return_value='ARTICLE'), \
@@ -67,6 +77,7 @@ with tempfile.TemporaryDirectory() as tmp:
             assert adapter.sent[0] == ('test', page.url)
             mark.assert_called_once_with('test', page.url)
         adapter.sent.clear()
+        memory.add_user('test','也想看看相关图片',sender='测试甲')
         with patch.object(config, 'active_profile', return_value={'provider':'openai'}), \
                 patch.object(service, '_proactive_decision', return_value='IMAGE'), \
                 patch('app.service.download_image', side_effect=OSError('offline')), \
@@ -78,6 +89,7 @@ with tempfile.TemporaryDirectory() as tmp:
             assert mark.call_count == 2
         adapter.sent.clear()
         for decision, kind in [('IMAGE', 'image'), ('SCREENSHOT', 'webpage-screenshot')]:
+            memory.add_user('test','继续看看'+kind,sender='测试甲')
             media_path = base / (kind+'.png')
             media_path.write_bytes(b'fixture')
             with patch.object(config, 'active_profile', return_value={'provider':'openai'}), \
@@ -93,6 +105,7 @@ with tempfile.TemporaryDirectory() as tmp:
                 assert not media_path.exists(), 'temporary media cleaned after sending'
             adapter.sent.clear()
         fallback_path = base/'fallback.png'
+        memory.add_user('test','看看网页截图',sender='测试甲')
         fallback_path.write_bytes(b'fixture')
         with patch.object(config, 'active_profile', return_value={'provider':'openai'}), \
                 patch.object(service, '_proactive_decision', return_value='SCREENSHOT'), \
@@ -108,6 +121,7 @@ with tempfile.TemporaryDirectory() as tmp:
         def changed(*args):
             state['revision'] += 1
             return 'TEXT'
+        memory.add_user('test','再聊一下这个话题',sender='测试甲')
         with patch.object(config, 'active_profile', return_value={'provider':'openai'}), \
                 patch.object(service, '_proactive_decision', side_effect=changed):
             service._idle_tick()

@@ -68,7 +68,8 @@ def main():
             first=run(ami);memory.add_assistant('test','我在。',meta={'web_search':first,'persona_id':'ami'})
             next_role=run(chen)
             assert next_role['agent']['turn']==1
-            assert first['agent']['conversation_id']!=next_role['agent']['conversation_id']
+            assert first['agent']['continuation_id']!=next_role['agent']['continuation_id']
+            assert first['agent']['session_id']==next_role['agent']['session_id']
             assert first['agent']['persona_key']!=next_role['agent']['persona_key']
             context=build_context_messages(memory.recent('test',8),persona=chen)
             assert any('不沿用其身份或称呼' in m['content'] for m in context)

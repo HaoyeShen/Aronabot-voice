@@ -41,6 +41,18 @@ def main():
                     plan=s._sharing_agent('test',cfg.target_by_name('test'))
                     assert plan['kind']==expected and fake.chat.call_count==1
             assert awkward_text('群里好安静，聊点什么吧')
+            memory.add_user('test','发个语音喵一下',sender='甲')
+            for output in ['语音发不了呀，猫叫一声喵可以','阿洛娜可以发语音哦。']:
+                fake=Mock();fake.chat.return_value=reply({'action':'final','text':json.dumps({'kind':'TEXT','text':output,'anchor':'发个语音喵一下'},ensure_ascii=False)})
+                with patch.object(cfg,'active_profile',return_value={'provider':'openai','model':'fixture'}),patch('app.sharing_agent.make_client',return_value=fake):
+                    assert s._sharing_agent('test',cfg.target_by_name('test'))['kind']=='WAIT'
+            memory.add_user('other','其他群的独有机密',sender='乙')
+            fake=Mock();fake.chat.side_effect=[reply({'action':'tool','tool':'recall_chat','arguments':{'query':'活动剧情'}}),
+                reply({'action':'final','text':json.dumps({'kind':'WAIT','recheck_after_seconds':600})})]
+            with patch.object(cfg,'active_profile',return_value={'provider':'openai','model':'fixture'}),patch('app.sharing_agent.make_client',return_value=fake):
+                plan=s._sharing_agent('test',cfg.target_by_name('test'))
+                assert plan['kind']=='WAIT' and plan['recheck_after_seconds']==600
+                assert '活动剧情' in str(fake.chat.call_args.args[0]) and '其他群的独有机密' not in str(fake.chat.call_args.args[0])
             # News collection receives model-generated queries, not another model invocation.
             fake=Mock();fake.chat.side_effect=[reply({'action':'tool','tool':'collect_news','arguments':{'queries':json.dumps({'国服':'蔚蓝档案 公告','日服':'ブルーアーカイブ','国际服':'Blue Archive news'})}}),
                 reply({'action':'final','text':json.dumps({'kind':'NEWS','text':'【国服】没有符合条件的新消息。\n【日服】没有符合条件的新消息。\n【国际服】没有符合条件的新消息。'},ensure_ascii=False)})]

@@ -138,6 +138,13 @@ class BaseWeChatAdapter:
     def ensure_chat_open(self, chat: str) -> bool:
         return False
 
+    def finalize_voice_send(self, chat: str) -> SendResult:
+        """Older transports send on release and have no pending draft step."""
+        return SendResult(True)
+
+    def publish_moment(self,text: str,image_path=None) -> SendResult:
+        return SendResult(False,'当前适配器不支持朋友圈发布，日记草稿已保留。')
+
     def canonical_chat(self, chat: str) -> str:
         return str(chat or "").strip()
 
@@ -840,6 +847,39 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
             log.warning("wechatauto 打开会话失败：%s", exc)
             return False
 
+    def finalize_voice_send(self, chat: str) -> SendResult:
+        """Commit WeChat's explicit voice draft, under the existing UI lock."""
+        with self._ui_lock:
+            uia = self._uia
+            if not uia:
+                return SendResult(False,'微信连接已停止，取消语音提交')
+            try:
+                if not self.is_same_chat(uia.current_chat(),chat):
+                    return SendResult(False,'当前会话已变化，取消语音提交')
+                win = getattr(uia,'_win',None)
+                if win is None:
+                    return SendResult(False,'无法确认微信语音控件')
+                button = win.ButtonControl(Name='发送语音',searchDepth=30)
+                if not button.Exists(.5,.1):
+                    return SendResult(True,'当前微信无需额外提交语音')
+                try:
+                    button.GetInvokePattern().Invoke()
+                except Exception:
+                    pass
+                # Qt can expose Invoke without actually submitting the draft.
+                # Re-check the exact voice action before its normal UI click.
+                if button.Exists(.3,.1) and not uia._click_ctrl(button):
+                    return SendResult(False,'未能提交待发送语音')
+                deadline = time.monotonic()+3
+                while time.monotonic()<deadline:
+                    if not button.Exists(.1,.05):
+                        return SendResult(True,'语音录音已提交')
+                    time.sleep(.1)
+                return SendResult(False,'语音仍处于待发送状态')
+            except Exception as exc:
+                log.warning('语音提交失败：%s',type(exc).__name__)
+                return SendResult(False,'语音提交失败')
+
     def _wait_outgoing(self, username: str, before_seq: int, expected_type: str,
                        timeout: float = 6.0) -> bool:
         deadline = time.time() + timeout
@@ -855,6 +895,11 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
                 pass
             time.sleep(0.5)
         return False
+
+    def publish_moment(self,text: str,image_path=None,*,dry_run=False) -> SendResult:
+        from .moments_publish import publish
+        with self._ui_lock:
+            return publish(self,text,image_path,dry_run=dry_run)
 
     def send_text(self, chat: str, text: str) -> SendResult:
         if not text.strip():

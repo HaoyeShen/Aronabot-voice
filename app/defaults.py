@@ -62,6 +62,9 @@ DEFAULT_CONFIG = {
         "keep_subwindows": True,
     },
     "bot": {
+        "diary_enabled": False,
+        "diary_time": "22:00",
+        "diary_attach_sticker": True,
         "auto_reply": True,
         "auto_start": True,
         "auto_sticker": True,
@@ -94,6 +97,7 @@ DEFAULT_CONFIG = {
         "natural_voice": True,
         "read_links": True,
         "web_search_enabled": True,
+        "baidu_baike_enabled": True,
         "agent_enabled": True,
         "agent_max_steps": 4,
         "agent_timeout_seconds": 90,

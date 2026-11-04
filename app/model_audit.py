@@ -67,7 +67,7 @@ def audited(default_purpose):
             from .agent_runtime import RUNTIME, inside_model
             if not inside_model():
                 return RUNTIME.invoke(self,fn.__name__,_purpose.get() or default_purpose,args,kwargs,
-                                      lambda: wrapped(self,*args,**kwargs))
+                                      lambda call_args,call_kwargs: wrapped(self,*call_args,**call_kwargs))
             purpose = _purpose.set(_purpose.get() or default_purpose)
             call_id = _call_id.set(uuid.uuid4().hex[:12])
             secrets = (getattr(self, 'api_key', ''),)
@@ -92,6 +92,6 @@ def model_call(client, method, purpose, *args, **kwargs):
     try:
         from .agent_runtime import RUNTIME
         return RUNTIME.invoke(client,method,purpose,args,kwargs,
-                              lambda: getattr(client, method)(*args, **kwargs))
+                              lambda call_args,call_kwargs: getattr(client, method)(*call_args, **call_kwargs))
     finally:
         _purpose.reset(token)

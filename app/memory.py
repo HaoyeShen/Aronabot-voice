@@ -91,6 +91,10 @@ class MemoryStore:
                 ON token_usage(model, created_at DESC);
             """
         )
+        columns={r[1] for r in self._conn.execute('PRAGMA table_info(token_usage)')}
+        for name in ('cache_hit_tokens','cache_miss_tokens'):
+            if name not in columns:
+                self._conn.execute('ALTER TABLE token_usage ADD COLUMN '+name+' INTEGER')
         self._conn.commit()
 
     @staticmethod
@@ -342,7 +346,7 @@ class MemoryStore:
 
     def record_usage(self, chat: str, provider: str, model: str,
                      prompt_tokens: int, completion_tokens: int,
-                     kind: str = "reply") -> dict:
+                     kind: str = "reply", cache_hit_tokens=None, cache_miss_tokens=None) -> dict:
         """Persist actual model token usage (never health probes)."""
         prompt = max(0, int(prompt_tokens or 0))
         completion = max(0, int(completion_tokens or 0))
@@ -352,13 +356,14 @@ class MemoryStore:
             self._conn.execute(
                 """INSERT INTO token_usage
                    (chat, kind, provider, model, prompt_tokens, completion_tokens,
-                    total_tokens, created_at, created_iso)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                    total_tokens, created_at, created_iso, cache_hit_tokens, cache_miss_tokens)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 (chat, kind, provider, model, prompt, completion, total,
-                 created, self._iso(created)),
+                 created, self._iso(created),cache_hit_tokens,cache_miss_tokens),
             )
             self._conn.commit()
         return {"prompt": prompt, "completion": completion, "total": total,
+                'cache_hit':cache_hit_tokens,'cache_miss':cache_miss_tokens,
                 "provider": provider, "model": model, "kind": kind}
 
     def usage_totals(self) -> dict:
@@ -379,7 +384,13 @@ class MemoryStore:
                    FROM token_usage WHERE substr(created_iso,1,10)=?""",
                 (today,),
             ).fetchone()
+            cache=self._conn.execute('''SELECT SUM(cache_hit_tokens) hit,SUM(cache_miss_tokens) miss,
+                SUM(CASE WHEN substr(created_iso,1,10)=? THEN cache_hit_tokens END) today_hit,
+                SUM(CASE WHEN substr(created_iso,1,10)=? THEN cache_miss_tokens END) today_miss
+                FROM token_usage''',(today,today)).fetchone()
         return {
+            'cache_hit':cache['hit'],'cache_miss':cache['miss'],
+            'today_cache_hit':cache['today_hit'],'today_cache_miss':cache['today_miss'],
             "requests": int(row["requests"] or 0),
             "prompt": int(row["prompt"] or 0),
             "completion": int(row["completion"] or 0),

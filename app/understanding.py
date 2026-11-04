@@ -89,7 +89,7 @@ def voice_reply_requested(content: str) -> bool:
         r"(?:语音|声音)(?:回复|回答|回我)|(?:发|发送|回)(?:我|给我)?(?:一|个|条|段|一条|一段)?语音|"
         r"说给我听|读给我听|念给我听|(?:朗读|念一下|读一下)|"
         r"(?:想听|让我听听|给我听听)(?:你|阿洛娜)?的?声音|"
-        r"(?:喵|汪|叫|喊|笑|哼)(?:一|个|两|几)声|(?:学|模仿)(?:一下)?(?:猫|狗)叫", text)
+        r"(?:喵|汪|叫|喊|笑|哼)(?:(?:一|个|两|几)声|一下)|(?:学|模仿)(?:一下)?(?:猫|狗)叫", text)
     if not request:
         return False
     prefix = text[:request.start()]
@@ -107,7 +107,7 @@ def cat_sound_requested(content: str) -> bool:
         return False
     if re.search(r'(?:不要|别|不用|无需|禁止)\s*(?:(?:再|学|模仿|你|来|主动)\s*){0,3}(?:喵|猫叫|猫咪叫)', text):
         return False
-    request = re.search(r'喵(?:一|个|两|几|三)声|(?:学|模仿)(?:一下)?(?:猫|猫咪|小猫)叫|(?:叫|来|说)(?:一声|一句|个)?喵(?:[～~。！!\s]|$)', text)
+    request = re.search(r'喵(?:(?:一|个|两|几|三)声|一下)|(?:学|模仿)(?:一下)?(?:猫|猫咪|小猫)叫|(?:叫|来|说)(?:一声|一句|个)?喵(?:[～~。！!\s]|$)', text)
     if not request:
         # Explicitly reading a quoted "喵" is a request, whereas merely
         # quoting "阿洛娜，喵一声" above is not.

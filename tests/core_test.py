@@ -165,8 +165,10 @@ def test_prompt_and_stickers() -> None:
     for meta in ({'voice_sent': True}, {'send_message': '语音气泡'}):
         voice_history = build_context_messages([
             {'role': 'assistant', 'content': '喵～', 'meta': meta}])
-        assert_true('已成功发送语音气泡' in voice_history[0]['content'],
-                    'successful voice and legacy metadata survive into model context')
+        from app.prompting import dialogue_state_rule
+        assert_true(voice_history[0]['content']=='喵～' and '已成功发送语音气泡' in dialogue_state_rule([
+            {'role':'assistant','content':'喵～','meta':meta}]),
+                    'voice transcript stays a real assistant turn; transport fact stays separate')
     text_history = build_context_messages([
         {'role': 'assistant', 'content': '喵～', 'meta': {'voice_sent': False, 'send_message': '已发送'}}])
     assert_true('已成功发送语音气泡' not in text_history[0]['content'],
@@ -180,16 +182,16 @@ def test_prompt_and_stickers() -> None:
     ]
     labelled = build_context_messages(manual_history, target_type="group", min_messages=2)
     assert_true("我本人手动发出" in labelled[0]["content"], "manual outgoing is labelled")
-    assert_true(labelled[1]["content"].startswith("[小明老师]"),
-                "group participants are labelled nickname+老师")
+    assert_true(labelled[1]["content"].startswith("[小明]"),
+                "group participants retain their real nickname")
     labelled_friend = build_context_messages([
         {"role": "user", "sender": "赵军情", "content": "你好"},
         {"role": "assistant", "sender": "阿洛娜", "content": "老师，阿洛娜在哦。"},
     ], target_type="friend", min_messages=2)
-    assert_true(labelled_friend[0]["content"].startswith("[赵军情老师]"),
-                "private participant is labelled nickname+老师")
-    assert_true(labelled_friend[1]["content"].startswith("[阿洛娜]"),
-                "assistant input is labelled")
+    assert_true(labelled_friend[0] == {'role':'user','content':'你好'},
+                "private user remains a native user turn")
+    assert_true(labelled_friend[1] == {'role':'assistant','content':'老师，阿洛娜在哦。'},
+                "assistant turn is the actual delivered text")
 
     assert_true(IncomingMessage("c", "s", "x", direction="out", attr="friend").is_self,
                 "outgoing message is self")

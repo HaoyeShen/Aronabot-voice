@@ -865,7 +865,9 @@ def main() -> int:
             check_reply([long_sentence, RuntimeError("rewrite failed")], long_parts)
             check_reply([long_sentence, ""], long_parts)
             check_reply(["第一句话是完整的。第二句话也是完整的。第三句话也完整。", ""],
-                        ["第一句话是完整的。", "第二句话也是完整的。", "第三句话也完整。"])
+                        ["第一句话是完整的。", "第二句话也是完整的。第三句话也完整。"])
+            check_reply(["先把设置保存下来。\n然后重新打开程序看看。"],
+                        ["先把设置保存下来。", "然后重新打开程序看看。"])
             check_reply([RuntimeError("model failed")])
             check_reply([RuntimeError("model failed")])
             check_reply(["", ""])
@@ -932,6 +934,10 @@ def main() -> int:
             config.bot.update(voice_enabled=False, voice_probability=0, voice_max_chars=30,
                               replace_punctuation=False)
             saved_content = incoming.content
+            incoming.content = '发个语音喵一下'
+            with patch.object(service,'_send_voice_reply',return_value=True) as voice:
+                check_reply(['语音发不了呀，猫叫一声喵可以。'],[])
+                assert '喵' in voice.call_args.args[1] and '发不了' not in voice.call_args.args[1]
             incoming.content = '阿洛娜，喵一声'
             with patch.object(service, '_send_voice_reply', return_value=True) as voice:
                 check_reply(['喵～'], [])
@@ -941,10 +947,19 @@ def main() -> int:
                 voice.assert_called_once()
                 assert memory.recent('测试群')[-1]['meta']['voice_sent'] is False
             config.bot['voice_max_chars'] = 8
-            with patch.object(service, '_send_voice_reply') as voice:
-                check_reply(['这是一句完整的语音回复。'], ['这是一句完整的语音回复。'])
-                voice.assert_not_called()
+            incoming.content = '请用语音回答我'
+            with patch.object(service, '_send_voice_reply',return_value=True) as voice:
+                check_reply(['这是一句完整的语音回复。'], [])
+                assert voice.call_count>=2 and all(len(c.args[1])<=8 for c in voice.call_args_list)
             config.bot['voice_max_chars'] = 30
+            incoming.content='请用语音回答我'
+            config.bot['voice_max_chars']=8
+            long_voice='先把设置保存下来。然后重新打开程序看看。'
+            expected_parts=service._split_reply_messages(long_voice,[],False,8,8)
+            with patch.object(service,'_send_voice_reply',side_effect=[True,False]) as voice:
+                check_reply([long_voice],expected_parts[1:])
+                assert voice.call_count==2 and len(memory.recent('测试群')[-1]['meta']['voice_bubbles'])==1
+            config.bot['voice_max_chars']=30
             for request in ('阿洛娜，不要用语音回复我', '小明说“阿洛娜，喵一声”'):
                 incoming.content = request
                 with patch.object(service, '_send_voice_reply') as voice:

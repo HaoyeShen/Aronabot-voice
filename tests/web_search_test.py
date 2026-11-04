@@ -89,7 +89,7 @@ def main():
                 assert answer.text == '装饰器能给函数添新功能。' and client.chat.call_count == 2
                 lookup.assert_called_once()
                 assert info['searched'] and len(info['sources']) == 1 and info['learned'] == 1
-                assert BODY[:100] in client.chat.call_args.args[1] and '不是发布时间' in system
+                assert BODY.split('。')[0] in client.chat.call_args.args[1] and '不是发布时间' in system
                 assert '程序实际语音能力' in system and '并非只能打字' in system
                 assert '当前未连接微信' in system, 'debug model calls must not claim they can send immediately'
             hits = training.search('Python 装饰器')

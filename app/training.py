@@ -23,6 +23,7 @@ import textwrap
 import threading
 import time
 import uuid
+import unicodedata
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -47,6 +48,10 @@ MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_TEXT_CHARS = 2_000_000
 CHUNK_SIZE = 700
 CHUNK_OVERLAP = 110
+
+
+def knowledge_requested(text: str) -> bool:
+    return bool(re.search(r'知识库|本地(?:训练|资料|知识)|学过的资料|学习过的资料',text or ''))
 
 
 def _now() -> str:
@@ -504,11 +509,25 @@ class TrainingStore:
 
     # --------------------------------------------------------------- retrieval
     @staticmethod
+    def entity_terms(query: str) -> list[str]:
+        text = unicodedata.normalize('NFKC',query or '')
+        text = re.sub(r'https?://\S+',' ',text)
+        stop = {'arona','plana','the','and','what','is','how','to','please','search',
+                'knowledge','txt','pdf','docx','md','json'}
+        return list(dict.fromkeys(t.casefold() for t in re.findall(r'[A-Za-z][A-Za-z0-9_+#.-]{1,}',text)
+                                  if t.casefold() not in stop))[:6]
+
+    @staticmethod
     def _terms(query: str) -> tuple[list[str], list[str]]:
         """Return (FTS trigram terms, fallback substring terms)."""
         fts_terms: list[str] = []
         like_terms: list[str] = []
-        for run in re.findall(r"[\u4e00-\u9fff]+|[A-Za-z0-9_]{2,}", query or ""):
+        query = unicodedata.normalize('NFKC',query or '')
+        # Named entities must survive even when a long Chinese instruction
+        # exhausts the trigram quota before reaching the actual subject.
+        runs = re.findall(r"[\u4e00-\u9fff]+|[A-Za-z0-9_]{2,}", query)
+        runs.sort(key=lambda run: bool(re.fullmatch(r'[\u4e00-\u9fff]+',run)))
+        for run in runs:
             if re.fullmatch(r"[\u4e00-\u9fff]+", run):
                 if len(run) >= 2:
                     like_terms.append(run)
@@ -538,30 +557,51 @@ class TrainingStore:
 
     def search(self, query: str, limit: int = 3,
                max_chars: int = 1800) -> list[dict]:
-        query = (query or "").strip()
+        query = unicodedata.normalize('NFKC',query or '').strip()
         if len(query) < 2:
             return []
         limit = max(1, min(8, int(limit)))
         max_chars = max(200, min(6000, int(max_chars)))
         fts_terms, like_terms = self._terms(query)
+        anchors = self.entity_terms(query)
+        titles = re.findall(r'《([^》]{2,100})》',query)[:2]
+        with self._lock:
+            titles = [title for title in titles if self._conn.execute(
+                'SELECT 1 FROM training_docs WHERE instr(lower(name),lower(?))>0 LIMIT 1',(title,)).fetchone()]
+        doc_filter = (' AND ('+' OR '.join('instr(lower(d.name),lower(?))>0' for _ in titles)+')') if titles else ''
         candidates: list[dict] = []
         if fts_terms:
             match = " OR ".join(f'"{term}"' for term in fts_terms)
             try:
                 with self._lock:
                     rows = self._conn.execute(
-                        """SELECT c.id AS chunk_id, c.doc_id, c.seq, c.content,
+                        f"""SELECT c.id AS chunk_id, c.doc_id, c.seq, c.content,
                                   d.name, d.source_type, d.source_url, d.retrieved_at, bm25(training_fts) AS rank
                            FROM training_fts
                            JOIN training_chunks c ON c.id = training_fts.rowid
                            JOIN training_docs d ON d.id = c.doc_id
-                           WHERE training_fts MATCH ?
+                           WHERE training_fts MATCH ?{doc_filter}
                            ORDER BY rank LIMIT ?""",
-                        (match, max(20, limit * 8)),
+                        (match, *titles, max(40, limit * 16)),
                     ).fetchall()
                 candidates = [dict(row) for row in rows]
             except sqlite3.Error as exc:
                 log.debug("训练资料 FTS 查询失败：%s", exc)
+        if anchors or titles:
+            # Always try exact entity recall, even if generic FTS matches
+            # already exist. Otherwise those matches hide the real entry.
+            clauses = ' OR '.join('instr(lower(c.content),?)>0' for _ in anchors) or '1=1'
+            with self._lock:
+                rows = self._conn.execute(
+                    f'''SELECT c.id AS chunk_id,c.doc_id,c.seq,c.content,d.name,
+                               d.source_type,d.source_url,d.retrieved_at
+                        FROM training_chunks c JOIN training_docs d ON d.id=c.doc_id
+                        WHERE ({clauses}){doc_filter} ORDER BY c.seq LIMIT 128''',
+                    (*anchors,*titles)).fetchall()
+            if rows and anchors:
+                candidates = [dict(row,rank=0.0) for row in rows]
+            elif rows and not candidates:
+                candidates = [dict(row,rank=0.0) for row in rows]
         if not candidates and like_terms:
             clauses = " OR ".join("content LIKE ?" for _ in like_terms)
             params = [f"%{term}%" for term in like_terms]
@@ -570,8 +610,8 @@ class TrainingStore:
                     f"""SELECT c.id AS chunk_id, c.doc_id, c.seq, c.content, d.name,
                                d.source_type, d.source_url, d.retrieved_at
                         FROM training_chunks c JOIN training_docs d ON d.id=c.doc_id
-                        WHERE {clauses} LIMIT ?""",
-                    (*params, max(20, limit * 8)),
+                        WHERE ({clauses}){doc_filter} LIMIT ?""",
+                    (*params, *titles, max(20, limit * 8)),
                 ).fetchall()
             for row in rows:
                 item = dict(row)
@@ -579,6 +619,12 @@ class TrainingStore:
                 candidates.append(item)
         if not candidates:
             return []
+        def relevance(item):
+            body = item['content'].casefold()
+            score = sum(6+min(3,body.count(t)) for t in anchors if t in body)
+            score += sum(3 for t in like_terms if t.casefold() in body)
+            return (-score,float(item.get('rank',0.0)),int(item.get('seq',0)))
+        candidates.sort(key=relevance)
         # Deduplicate by document/sequence, then trim to the character budget.
         seen: set[tuple[str, int]] = set()
         results: list[dict] = []
@@ -595,7 +641,10 @@ class TrainingStore:
             if remaining <= 60:
                 break
             if len(content) > remaining:
-                content = content[:remaining].rstrip()
+                positions = [content.casefold().find(t) for t in anchors if t in content.casefold()]
+                focus = min(positions) if positions else 0
+                start = min(max(0,focus-remaining//3),len(content)-remaining)
+                content = content[start:start+remaining].strip()
             used += len(content)
             rank = float(item.get("rank", 0.0))
             results.append({

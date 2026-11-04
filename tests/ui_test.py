@@ -87,6 +87,8 @@ def main() -> int:
         agent_fixture=SimpleNamespace(model='ui-fixture',api_key='',chat=lambda *a,**k:SimpleNamespace(text='A群的回答'))
         with RUNTIME.task('UI 测试任务','独立聊天A','ui_agent_a'):
             model_call(agent_fixture,'chat','消息回复',[{'role':'user','content':'A群输入'}])
+        with RUNTIME.task('A群后续新闻','独立聊天A','ui_agent_a'):
+            RUNTIME.note('agent','同一会话中的新闻结果')
         with RUNTIME.task('另一个聊天','独立聊天B','ui_agent_b'):
             RUNTIME.note('agent','B群不可串入A群的内容')
         app.show_page('agent')
@@ -100,10 +102,21 @@ def main() -> int:
             return values
         shown='\n'.join(visible_text(agent_page.bubbles))
         assert 'A群输入' in shown and 'A群的回答' in shown
+        assert '同一会话中的新闻结果' in shown and agent_page._selected=='__all__'
         assert 'B群不可串入A群' not in shown
+        agent_page.tasks.selection_clear(0,'end')
+        agent_page.tasks.selection_set(1)
+        agent_page.select_task()
+        assert 'A群输入' not in '\n'.join(visible_text(agent_page.bubbles))
+        agent_page.follow_latest()
+        assert 'A群输入' in '\n'.join(visible_text(agent_page.bubbles))
         agent_page.clear_view()
         assert not agent_page._ids
+        assert RUNTIME.call_snapshot('独立聊天A','ui_agent_a'), 'clearing the view must retain model diagnostics'
+        service.clear_context('独立聊天A')
+        assert not RUNTIME.session_snapshot('独立聊天A','ui_agent_a')
         app.show_page('home')
+        root.update()  # Map the canvas before generating a real click event.
         header_frames = app.topbar.winfo_children()[:2]
         assert header_frames[0].winfo_rootx()+header_frames[0].winfo_width() <= header_frames[1].winfo_rootx(), 'header must not overlap at minimum size'
         x1, y1, x2, y2 = home._head_box
@@ -178,6 +191,7 @@ def main() -> int:
         reply_page = app.pages['listen_reply']
         assert reply_page.web_search_enabled.get()
         assert reply_page.agent_enabled.get()
+        assert reply_page.baidu_baike_enabled.get()
         assert reply_page.agent_max_steps.get() == '4'
         assert reply_page.agent_timeout.get() == '90'
         assert reply_page.web_test_query.get() == 'Python 装饰器'
@@ -246,6 +260,12 @@ def main() -> int:
         assert saved_bot['idle_video_probability'] == .65
         assert saved_bot['web_search_enabled'] and saved_bot['web_search_test_query'] == 'Python 装饰器'
         assert saved_bot['agent_enabled'] and saved_bot['agent_max_steps'] == 4
+        reply_page.baidu_baike_enabled.switch._toggle()
+        reply_page.save()
+        assert not ConfigStore(config.path).bot['baidu_baike_enabled']
+        reply_page.baidu_baike_enabled.switch._toggle()
+        reply_page.save()
+        assert ConfigStore(config.path).bot['baidu_baike_enabled']
         assert saved_bot['agent_timeout_seconds'] == 90
         reply_page.web_search_enabled.switch._toggle()
         reply_page.save()

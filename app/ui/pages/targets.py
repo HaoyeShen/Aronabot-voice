@@ -477,7 +477,7 @@ class TargetsPage(BasePage):
                        "只影响这个群，不会删除其他会话。",
                        ok_text="清空", danger=True, icon=self.app.icon):
             return
-        count = self.memory.clear(target.get("name", ""))
+        count = self.service.clear_context(target.get("name", ""))
         self.app.toast(f"已清空「{target.get('name')}」的 {count} 条上下文。", "success")
         self.refresh()
 

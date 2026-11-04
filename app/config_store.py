@@ -144,6 +144,10 @@ class ConfigStore:
         except (TypeError, ValueError):
             admin["off_seconds"] = 3600
         bot = data.setdefault("bot", {})
+        for key in ('diary_enabled','diary_attach_sticker'):
+            bot[key]=bool(bot.get(key,False if key=='diary_enabled' else True))
+        diary_time=str(bot.get('diary_time','22:00'))
+        bot['diary_time']=diary_time if re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',diary_time) else '22:00'
         if not bot.get('bubble_policy_version'):
             if bot.get('max_reply_chars', 23) == 23:
                 bot['max_reply_chars'] = 25
@@ -213,6 +217,7 @@ class ConfigStore:
         bot["quote_reply"] = bool(bot.get("quote_reply", False))
         bot["voice_enabled"] = bool(bot.get("voice_enabled", False))
         bot["web_search_enabled"] = bool(bot.get("web_search_enabled", True))
+        bot["baidu_baike_enabled"] = bool(bot.get("baidu_baike_enabled", True))
         bot["agent_enabled"] = bool(bot.get("agent_enabled", True))
         for field, default, lower, upper in (("agent_max_steps", 4, 1, 8),
                                               ("agent_timeout_seconds", 90, 10, 300)):

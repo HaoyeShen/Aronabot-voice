@@ -12,6 +12,7 @@ def main():
             prompt=builder(persona,[],recipient_name='测试对象',max_chars=25,max_sentence_chars=25)
             assert natural_dialogue_rule(persona) in prompt
             assert all(x in prompt for x in ['25','不把一个群友的经历','对方说不想提就收住','需要核实的事实照常','不机械加结尾提问'])
+            assert all(x in prompt for x in ['用换行标出自然停顿','不必把每一句都另发一个气泡'])
             assert persona['name'] in prompt
         assert '不要为了显得像真人，编造现实经历' in natural_dialogue_rule(persona)
     print('NATURAL DIALOGUE TESTS PASSED')
