@@ -15,12 +15,19 @@ def attach_images(messages, paths, profile):
             continue
         try:
             with Image.open(file) as source:
-                image = ImageOps.exif_transpose(source)
-                image.thumbnail((1280, 1280))
-                image = image.convert('RGB')
-                output = io.BytesIO()
-                image.save(output, 'JPEG', quality=85)
-            images.append(base64.b64encode(output.getvalue()).decode('ascii'))
+                if source.width*source.height>16_000_000:continue
+                frames=min(600,getattr(source,'n_frames',1))
+                for frame in dict.fromkeys((0,frames//2,frames-1)):
+                    if len(images)>=3:break
+                    source.seek(frame)
+                    image = ImageOps.exif_transpose(source).convert('RGBA')
+                    image.thumbnail((1280, 1280))
+                    background=Image.new('RGBA',image.size,'white')
+                    background.alpha_composite(image)
+                    output = io.BytesIO()
+                    background.convert('RGB').save(output,'JPEG',quality=85)
+                    data=base64.b64encode(output.getvalue()).decode('ascii')
+                    if data not in images:images.append(data)
         except (OSError, ValueError):
             continue
     if not images:

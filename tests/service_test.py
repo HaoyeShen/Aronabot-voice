@@ -7,6 +7,7 @@ import tempfile
 import time
 import threading
 from types import SimpleNamespace
+from dataclasses import replace
 from unittest.mock import patch
 from pathlib import Path
 
@@ -77,6 +78,7 @@ def test_idle_chat() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp)
         config = ConfigStore(base / 'config.json')
+        config.bot["probability_first_reply"] = False  # Legacy wake-up regression coverage.
         config.set_active_profile('demo-local')
         for value, expected in [('bad', .03), (None, .03), (float('nan'), .03),
                                 (float('inf'), .03), (-1, 0), (2, 1), (0, 0), (.075, .075)]:
@@ -337,6 +339,7 @@ def test_idle_videos() -> None:
         from dataclasses import replace
         video = replace(video, url=f'https://www.bilibili.com/zh-Hans/video/{video.bvid}/')
         config = ConfigStore(base/'config.json')
+        config.bot["probability_first_reply"] = False  # Legacy wake-up regression coverage.
         assert config.bot['idle_video_topics'] == ['蔚蓝档案']
         config.bot['idle_video_topics'] = '蔚蓝档案，Python\nPython'
         config.save()
@@ -389,6 +392,37 @@ def test_idle_videos() -> None:
                 with patch.object(service.news, 'fetch', return_value={'国服':[], '日服':[], '国际服':[]}):
                     service._news_tick()
                 pick.assert_not_called(); mark.assert_not_called()
+                # Repeated scheduler ticks must not repeat an unchanged skip
+                # log; checking, schedule changes and tomorrow still work.
+                from datetime import datetime
+                class NewsClock(datetime):
+                    current = datetime(2026, 11, 5, 16, 42)
+                    @classmethod
+                    def now(cls):
+                        return cls.current
+                scheduled = [{'name': '新闻A', 'news_time': '06:50'},
+                             {'name': '新闻B', 'news_time': '06:50'}]
+                with patch.object(service.news, 'enabled_targets', return_value=scheduled), \
+                        patch.object(service.news, 'run', return_value={'sent':False, 'reason':'已过早间补发窗口'}) as run, \
+                        patch.object(service_module, 'datetime', NewsClock), \
+                        patch.object(service_module.log, 'info') as status:
+                    service._news_tick(); service._news_tick()
+                    assert run.call_count == 4 and status.call_count == 2
+                    scheduled[0]['news_time'] = '07:00'
+                    service._news_tick()
+                    assert status.call_count == 3
+                    NewsClock.current = datetime(2026, 11, 6, 16, 42)
+                    service._news_tick()
+                    assert status.call_count == 5
+                    run.return_value = {'sent':False, 'reason':'还没到发送时间'}
+                    service._news_tick()
+                    assert status.call_count == 5
+                    run.return_value = {'sent':False, 'reason':'已过早间补发窗口'}
+                    service._news_tick()
+                    assert status.call_count == 7
+                    scheduled.clear()
+                    service._news_tick()
+                    assert not service._news_skip_states
                 adapter.sent.clear()
                 eligible()
                 with patch.object(adapter, 'send_text', return_value=SendResult(False, 'offline')):
@@ -480,6 +514,7 @@ def test_manual_idle_video() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp)
         config = ConfigStore(base/'config.json')
+        config.bot["probability_first_reply"] = False  # Legacy wake-up regression coverage.
         assert config.bot['idle_video_manual_chat'] == 'test'
         config.bot['idle_video_manual_chat'] = '  '
         config.save()
@@ -601,6 +636,7 @@ def test_discussion() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp)
         config = ConfigStore(base/'config.json')
+        config.bot["probability_first_reply"] = False  # Legacy wake-up regression coverage.
         config.set_active_profile('demo-local')
         config.add_target('test', 'group', 'arona')
         config.add_target('other', 'group', 'arona')
@@ -697,6 +733,7 @@ def main() -> int:
     )
     with tempfile.TemporaryDirectory() as tmp:
         config = ConfigStore(Path(tmp) / "config.json")
+        config.bot["probability_first_reply"] = False  # Legacy wake-up regression coverage.
         config.set_active_profile("demo-local")
         config.bot.update({"reply_delay_min": 0.0, "reply_delay_max": 0.0,
                            "max_reply_chars": 23, "max_sentence_chars": 23,
@@ -843,9 +880,13 @@ def main() -> int:
 
             fallback_outputs = []
             def check_reply(replies, expected=None):
+                # Independent length/fallback cases use real distinct input rows.
+                # Explicit repetition is intentional here; transport dedupe has its own suite.
+                case_incoming = replace(incoming, content=incoming.content + '，再说一遍')
+                reply_row=service._store_user(case_incoming,case_incoming.content)
                 before = len(adapter.sent)
                 with patch.object(service_module, "make_client", return_value=Client(replies)):
-                    service._generate_and_send(incoming, group_target, 1, "帮帮我", force_reply=True)
+                    service._generate_and_send(case_incoming, group_target, reply_row, "帮帮我", force_reply=True)
                 sent = [text for _, text in adapter.sent[before:]]
                 if expected is None:
                     assert len(sent) == 1 and 0 < len(sent[0]) <= 23
@@ -874,12 +915,12 @@ def main() -> int:
             assert len(set(fallback_outputs)) >= 2, 'fallback wording must vary'
             before = len(adapter.sent)
             with patch.object(service_module, 'make_client', return_value=Client([RuntimeError('offline')])):
-                service._generate_and_send(incoming, group_target, 1, '帮帮我', force_reply=False)
+                service._generate_and_send(incoming, group_target, service._store_user(incoming, incoming.content), '帮帮我', force_reply=False)
             assert len(adapter.sent) == before + 1, 'eligible ordinary replies also get a fallback'
             assert 0 < len(adapter.sent[-1][1]) <= 23 and '抱歉' not in adapter.sent[-1][1]
             before = len(adapter.sent)
             with patch.object(service_module, 'make_client', side_effect=RuntimeError('client initialization failed')):
-                service._generate_and_send(incoming, group_target, 1, '帮帮我', force_reply=False)
+                service._generate_and_send(incoming, group_target, service._store_user(incoming, incoming.content), '帮帮我', force_reply=False)
             assert len(adapter.sent) == before + 1, 'client initialization errors also need a complete fallback'
 
             # Third-person public discussion is eligible, but not a forced keyword call.

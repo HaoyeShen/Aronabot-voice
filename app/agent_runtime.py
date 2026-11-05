@@ -251,9 +251,12 @@ class AgentRuntime:
             call_args, call_kwargs = args, kwargs
             messages = args[0] if args else kwargs.get('messages')
             if method == 'chat' and isinstance(messages,list):
-                mode = _context_mode.get()
-                if mode == 'auto' and purpose in {
-                        '关键词是否对机器人说话','群聊回复对象判断','上下文摘要',
+                legacy = getattr(client,'effort','') == 'high_consumption'
+                # New public-facing diary/comments retain their private-data boundary.
+                protected = purpose.startswith(('今日日记','朋友圈Agent'))
+                mode = 'auto' if legacy and not protected else _context_mode.get()
+                if not legacy and mode == 'auto' and purpose in {
+                        '关键词是否对机器人说话','群聊回复对象判断','概率命中后：判断是否回复','上下文摘要',
                         '暖场视频内容及主题审核','暖场视频检索词规划','暖场视频短评生成'}:
                     mode = 'provided'  # These callers already supply their evidence.
                 context = [] if mode == 'provided' else self._session_messages(state)

@@ -67,6 +67,11 @@ class TargetDialog(BaseDialog):
                                     str(target.get("context_limit", 30)),
                                     hint="20–100", width=12)
         self.context.pack(side="left", fill="x", expand=True, padx=(0, px(8)))
+        self.shared_memory = tk.BooleanVar(value=bool(target.get('shared_memory_enabled', False)))
+        tk.Checkbutton(body, text="参与跨聊天记忆（仅与同样开启的会话互相共享）",
+                       variable=self.shared_memory, bg=C['card'], fg=C['text'],
+                       activebackground=C['card'], selectcolor=C['card_soft'],
+                       font=font(9), anchor='w').pack(fill='x', pady=(0, px(10)))
         prob_frame = tk.Frame(body, bg=C["card"])
         prob_frame.pack(fill="x", pady=(0, px(10)))
         self.probability = LabeledEntry(prob_frame, "私聊回复概率（0–1）",
@@ -74,9 +79,9 @@ class TargetDialog(BaseDialog):
                                         hint="仅好友生效", width=10)
         self.probability.pack(side="left", fill="x", expand=True, padx=(0, px(6)))
         self.group_probability = LabeledEntry(
-            prob_frame, "群聊未 @ 概率（0–1）",
+            prob_frame, "群聊回复概率（0–1）",
             str(target.get("group_reply_probability",
-                           page.config.bot.get("group_reply_probability", 0.3))),
+                           page.config.bot.get("group_reply_probability", 0.03))),
             hint="仅群聊生效", width=10,
         )
         self.group_probability.pack(side="left", fill="x", expand=True)
@@ -122,7 +127,7 @@ class TargetDialog(BaseDialog):
             context = max(20, min(100, int(self.context.get() or 30)))
             probability = max(0.0, min(1.0, float(self.probability.get() or 1.0)))
             group_probability = max(0.0, min(1.0, float(
-                self.group_probability.get() or self.page.config.bot.get("group_reply_probability", 0.3)
+                self.group_probability.get() or self.page.config.bot.get("group_reply_probability", 0.03)
             )))
             news_time = self.news_time.get().strip() or "06:50"
             datetime.strptime(news_time, "%H:%M")
@@ -138,6 +143,7 @@ class TargetDialog(BaseDialog):
                 "type": "group" if self.kind.get() == "群聊" else "friend",
                 "persona_id": persona_id,
                 "context_limit": context,
+                "shared_memory_enabled": bool(self.shared_memory.get()),
                 "reply_probability": probability,
                 "group_reply_probability": group_probability,
                 "news_enabled": news_enabled,
@@ -186,7 +192,7 @@ class TargetRow(tk.Frame):
         context_count = page.memory.context_count(target.get("name", ""))
         probability_note = ""
         if target.get("type") == "group":
-            probability_note = f"  ·  未@概率 {round(float(target.get('group_reply_probability', 0.3)) * 100)}%"
+            probability_note = f"  ·  回复概率 {round(float(target.get('group_reply_probability', 0.03)) * 100)}%"
         news_note = ""
         if target.get("news_enabled"):
             news_note = f"  ·  新闻 {target.get('news_time', '06:50')}"
@@ -196,6 +202,7 @@ class TargetRow(tk.Frame):
             video_note = "活跃视频：" + (truncate(" / ".join(topics), 20) if topics else "沿用全局")
         note = (f"人格：{persona.get('name', '阿洛娜')}  ·  已存 {context_count} 条上下文"
                 f"  ·  上下文窗口 {target.get('context_limit', 30)}{probability_note}{news_note}")
+        note += '  ·  跨聊天记忆' + ('开' if target.get('shared_memory_enabled') else '关')
         if target.get("note"):
             note += "  ·  " + truncate(target.get("note"), 26)
         tk.Label(mid, text=note, bg=bg, fg=C["muted"], font=font(8), anchor="w").pack(fill="x")

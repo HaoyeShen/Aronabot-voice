@@ -305,18 +305,14 @@ def draw_chibi(mood: str) -> Image.Image:
 
 
 def build_stickers() -> None:
-    definitions = [
-        ("hello", "挥手问候", "开心,问候,在吗,你好", "阿洛娜挥着手，笑眯眯地回应老师。", "开心"),
-        ("happy", "开心转圈", "开心,表扬,好耶,庆祝", "阿洛娜眼睛发亮、周围冒着小星星。", "开心"),
-        ("shy", "害羞脸红", "害羞,喜欢,被夸,不好意思", "阿洛娜红着脸、视线飘向一边。", "害羞"),
-        ("think", "认真思考", "思考,疑问,让我想想,分析", "阿洛娜托着下巴，头顶冒出一个问号。", "思考"),
-        ("sad", "小小委屈", "委屈,难过,安慰,求抱抱", "阿洛娜眼角挂着泪珠，可怜巴巴。", "难过"),
-        ("angry", "气鼓鼓", "生气,抗议,不满,哼", "阿洛娜鼓起脸颊，头上冒出粉色怒符。", "生气"),
-        ("sleepy", "困困打盹", "困,晚安,累了,睡觉", "阿洛娜半闭着眼，旁边飘着 Zzz。", "困倦"),
-        ("confused", "满头问号", "疑惑,不懂,惊讶,诶", "阿洛娜歪着头，旁边冒出好几个问号。", "疑惑"),
-    ]
-    for mood, _, _, _, _ in definitions:
-        draw_chibi(mood).save(STICKERS / f"arona_{mood}.png")
+    # Existing official portraits are the reviewed default resources. Never
+    # regenerate the retired flat geometric artwork into the active library.
+    import sys
+    if str(ROOT) not in sys.path:sys.path.insert(0,str(ROOT))
+    from app.defaults import default_stickers
+    missing=[s['file'] for s in default_stickers() if not (ROOT/s['file']).is_file()]
+    if missing:raise FileNotFoundError('缺少官方立绘表情包：'+', '.join(missing))
+
 
 
 if __name__ == "__main__":

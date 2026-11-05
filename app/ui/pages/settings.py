@@ -18,6 +18,7 @@ from ...paths import BACKUP_DIR, CONFIG_FILE, DATA, DATABASE, LOGS, PERSONAS_FIL
 from ...ui.theme import C, display_font, font, px
 from ...ui.widgets import (
     Card,
+    BaseDialog,
     LabeledEntry,
     RoundedButton,
     ScrollFrame,
@@ -89,6 +90,32 @@ class SettingsPage(BasePage):
         self.diary_preview.insert('1.0','预览只生成本地草稿，不会发布朋友圈。\n不包含群名、微信昵称或聊天原文。')
         self.diary_preview.configure(state='disabled')
         self.diary_preview.pack(fill='x')
+        intelligence = Card(left, padding=16)
+        intelligence.pack(fill='x',pady=(px(12),0))
+        SectionHeading(intelligence.body,'推理强度','中档保留现有行为；其余档位调整输出空间与工具深度').pack(fill='x',pady=(0,px(8)))
+        from ...reasoning import LABELS, level
+        self.effort=tk.StringVar(value=LABELS[level(self.config.bot.get('reasoning_intensity'))])
+        ttk.Combobox(intelligence.body,textvariable=self.effort,values=list(LABELS.values()),state='readonly').pack(fill='x')
+        tk.Label(intelligence.body,text='轻度：优先简答 / 约0.6倍输出空间；中：当前基线；高：约2倍；极高：约4倍。\n复杂任务可用工具步骤约2 / 4 / 6 / 8。实际消耗取决于输入、缓存和问题，不是每日限额。高消耗：恢复精简前的完整任务上下文、详细提示和后台判断频率。',
+                 wraplength=px(410),justify='left',bg=C['card'],fg=C['muted'],font=font(8)).pack(fill='x',pady=px(8))
+        self.free_mode=self._var('roleplay_free_mode',self.config.bot.get('roleplay_free_mode',False),tk.BooleanVar)
+        ToggleRow(intelligence.body,'无限制模式（角色扮演）',self.free_mode,'保持当前角色，仅放宽话题与表达；虚构情境可描写人类生活。接入服务规则、消息时效与会话核对仍生效').pack(fill='x')
+        moments=Card(right,padding=16)
+        moments.pack(fill='x',pady=(px(12),0))
+        SectionHeading(moments.body,'浏览朋友圈与评论','读取近24小时文字动态，由当前人格判断是否适合评论').pack(fill='x',pady=(0,px(8)))
+        self.moments_enabled=self._var('moments_comment_enabled',self.config.bot.get('moments_comment_enabled',False),tk.BooleanVar)
+        ToggleRow(moments.body,'自动浏览并评论',self.moments_enabled,'默认关闭；每条动态最多尝试一次，不评论自己的动态').pack(fill='x')
+        self.moments_interval=LabeledEntry(moments.body,'检查间隔（分钟）',str(self.config.bot.get('moments_comment_interval_minutes',30)),hint='5–1440',width=8)
+        self.moments_interval.pack(fill='x',pady=px(6))
+        RoundedButton(moments.body,text='读取并预览评论',command=self.preview_moments,width=160,height=32).pack(anchor='w')
+        self.moments_preview=tk.Text(moments.body,height=5,wrap='word',font=font(8),bg=C['card_soft'],fg=C['text'],relief='flat')
+        self.moments_preview.insert('1.0','预览不会发评论；只读取本地数据库和UIA，不截图。\n图片和视频本轮不可见；目标不唯一或微信控件不兼容时不提交。')
+        self.moments_preview.configure(state='disabled');self.moments_preview.pack(fill='x',pady=px(6))
+        sources=Card(right,padding=16)
+        sources.pack(fill='x',pady=(px(12),0))
+        SectionHeading(sources.body,'基沃托斯新闻来源','30个独立站点，另保留官网、官方动态、Steam等渠道').pack(fill='x',pady=(0,px(8)))
+        tk.Label(sources.body,text='分别检索各站点；只概括有发布时间证据、符合时效且未发过的消息。来源数量不等于每天有30条新闻，无法访问时会记录。',wraplength=px(410),justify='left',bg=C['card'],fg=C['muted'],font=font(8)).pack(fill='x')
+        RoundedButton(sources.body,text='查看来源目录',command=self.show_news_sources,width=150,height=32).pack(anchor='w',pady=px(6))
         context = Card(left, padding=16)
         context.pack(fill="x", pady=(px(12), 0))
         SectionHeading(context.body, "上下文与节奏", "让回复更像真人").pack(fill="x", pady=(0, px(10)))
@@ -210,11 +237,16 @@ class SettingsPage(BasePage):
         self.admin_allowed.insert("1.0", "\n".join(
             str(x) for x in self.config.data.get("admin", {}).get("allowed", ["__self__"])
         ))
+        self.admin_cross_chat = ToggleRow(
+            admin_card.body, "允许名单内管理员私聊跨聊天发送",
+            "私聊按管理员名单识别，无需输入密码；当次指令写明目标和发送原文。仅发送文字，目标重名或结果不明时不重试。",
+            self.config.data.get('admin', {}).get('cross_chat_enabled', True))
+        self.admin_cross_chat.pack(fill='x', pady=px(5))
         tk.Label(
             admin_card.body,
             text="命令：/admin 验证 · /reset 清空当前上下文 · /test 调试信息 · "
                  "/off 暂停一小时 · /start 恢复 · /end 保存并退出。\n"
-                 "管理员模式下会暂停该会话的智能回复与 API 调用；只有验证通过的发送者能下指令。",
+                 "名单内管理员私聊可直接进行自然语言操作，如“向test群发送：你好”。群聊管理员模式仍只接收管理指令。",
             bg=C["card"], fg=C["muted"], font=font(7), justify="left", anchor="w",
             wraplength=px(420),
         ).pack(fill="x", pady=(px(4), 0))
@@ -269,6 +301,31 @@ class SettingsPage(BasePage):
     def on_show(self) -> None:
         self._load()
 
+    def show_news_sources(self):
+        from ...news_sources import SOURCES
+        dialog=BaseDialog(self,'基沃托斯新闻来源','按实际站点分别查询；检索入口不计入来源数量',width=650,height=620,icon=self.icon)
+        text=tk.Text(dialog.body,wrap='word',font=font(9),bg=C['card'],fg=C['text'],relief='flat')
+        text.pack(fill='both',expand=True,padx=px(15),pady=px(12))
+        report=self.service.news._fetch_report.get('publishers',{})
+        lines=[]
+        for n,r in enumerate(SOURCES,1):
+            state=report.get(r.host)
+            label=('发现'+str(state['candidates'])+'个候选' if state and state.get('candidates') else
+                   '未取得候选（可能无新稿、超时或拒绝访问）' if state else '尚未采集')
+            feed=' · 已读取站点RSS' if state and state.get('feed')=='read' else ''
+            lines.append(f'{n}. {r.name} · {r.host} · {r.region}\n   {label}{feed}')
+        text.insert('1.0','\n'.join(lines))
+        text.configure(state='disabled')
+        dialog.add_footer('关闭',dialog.close);dialog.show()
+
+    def preview_moments(self):
+        if getattr(self,'_moments_busy',False):return
+        self._moments_busy=True
+        def work():
+            self.service.emit('moments_preview_done',self.service.moments_reader.tick(preview=True) or {'ok':False,'message':'当前无法读取朋友圈。'})
+        threading.Thread(target=work,daemon=True).start()
+        self.app.toast('正在读取朋友圈并生成预览，不会发评论。','info')
+
     def preview_diary(self):
         if getattr(self,'_diary_busy',False):return
         self._diary_busy=True
@@ -288,7 +345,15 @@ class SettingsPage(BasePage):
         threading.Thread(target=work,daemon=True).start()
 
     def on_event(self,kind,data):
-        if kind in ('diary_preview_done','diary_publish_done'):
+        if kind=='moments_preview_done':
+            self._moments_busy=False
+            self.moments_preview.configure(state='normal');self.moments_preview.delete('1.0','end')
+            self.moments_preview.insert('1.0',data.get('text') or data.get('message',''))
+            self.moments_preview.configure(state='disabled')
+            self.app.toast(data.get('message','预览已完成'),'success' if data.get('ok') else 'warn')
+        elif kind=='moments_status':
+            self.app.toast(data.get('message','朋友圈状态已更新'),'success' if data.get('ok') else 'warn')
+        elif kind in ('diary_preview_done','diary_publish_done'):
             self._diary_busy=False
             self.diary_send_btn.set_busy(False,'立即发布今日日记')
             self.diary_preview.configure(state='normal')
@@ -300,8 +365,10 @@ class SettingsPage(BasePage):
             self.app.toast(data.get('message','日记状态已更新'),'success' if data.get('ok') else 'warn')
 
     def save(self) -> None:
+        previous_admins = tuple(self.config.data.get('admin', {}).get('allowed', []))
         try:
             diary_time=datetime.strptime(self.diary_time.get(),'%H:%M').strftime('%H:%M')
+            moments_interval=max(5,min(1440,int(self.moments_interval.get())))
             context_limit = max(20, min(100, int(self.context_limit.get())))
             max_chars = max(8, min(200, int(self.max_chars.get() or 25)))
             bubble_limit = max(1, min(30, int(self.bubble_limit.get() or 20)))
@@ -320,6 +387,10 @@ class SettingsPage(BasePage):
         backend_before = self.config.wechat.get("backend", "auto")
         bot = self.config.bot
         bot.update({
+            'reasoning_intensity':{'轻度':'light','中':'medium','高':'high','极高':'extreme','高消耗':'high_consumption'}.get(self.effort.get(),'medium'),
+            'roleplay_free_mode':self.free_mode.get(),
+            'moments_comment_enabled':self.moments_enabled.get(),
+            'moments_comment_interval_minutes':moments_interval,
             'diary_enabled':self.diary_enabled.get(),'diary_time':diary_time,
             'diary_attach_sticker':self.diary_sticker.get(),
             "context_limit": context_limit,
@@ -352,12 +423,16 @@ class SettingsPage(BasePage):
         allowed = [line.strip() for line in self.admin_allowed.get("1.0", "end").splitlines()
                    if line.strip()]
         self.config.data["admin"]["allowed"] = allowed or ["__self__"]
+        self.config.data["admin"]["cross_chat_enabled"] = self.admin_cross_chat.get()
         self.config.save()
         self.service.reload_config()
         self.status.configure(text="已保存 · " + datetime.now().strftime("%H:%M:%S"),
                               fg=C["green"])
         self.app.toast("设置已保存。", "success")
         self.app.refresh_header()
+        if (previous_admins != tuple(self.config.data['admin']['allowed'])
+                and self.service.running and backend_before == self.config.wechat.get('backend')):
+            self.app.reload_listening()
         if backend_before != self.config.wechat.get("backend") and self.service.running:
             if confirm(self.winfo_toplevel(), "重启机器人",
                        "微信适配器已更改，需要重启机器人才能生效。现在重启吗？",

@@ -210,6 +210,7 @@ def main() -> int:
                 patch.object(service, '_bilibili', return_value=[]), \
                 patch.object(service, '_search', return_value=[candidate]) as search, \
                 patch.object(service, '_rss_search', return_value=[]), \
+                patch.object(service, '_publisher_feed', return_value=[]), \
                 patch.object(service, '_official_jp', return_value=[]), \
                 patch.object(service, '_steam_global', return_value=[]), \
                 patch.object(service, '_official_dynamic', return_value=[]), \
@@ -217,7 +218,10 @@ def main() -> int:
                 patch('app.news.news_now', return_value=fixed), \
                 patch('app.news.read_article', return_value=('2020-01-01', 'old article text', (), candidate.title)):
             collected = service.fetch()
-            assert search.call_count == 3
+            from app.news_sources import SOURCES
+            assert search.call_count == 3 + len(SOURCES)
+            assert len(SOURCES) >= 25 and len({r.host for r in SOURCES}) == len(SOURCES)
+            assert len(service._fetch_report['publishers']) == len(SOURCES)
             # Search/crawl recency never rescues a demonstrably old article.
             assert not service._filter_seen(collected, 3, '新闻A', fixed)['国服']
         # A stale official announcement is not forced back into the digest.

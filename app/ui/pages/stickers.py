@@ -20,6 +20,7 @@ from ...ui.widgets import (
     confirm,
 )
 from .base import BasePage
+from ...sticker_policy import STYLES, reviewed_style
 
 EMOTIONS = ["开心", "害羞", "思考", "难过", "生气", "困倦", "疑惑", "惊讶", "温柔", "其他"]
 
@@ -82,6 +83,12 @@ class StickerDialog(BaseDialog):
                  font=font(9, "bold")).pack(side="left")
         self.enabled = ToggleSwitch(enabled_row, value=(sticker or {}).get("enabled", True))
         self.enabled.pack(side="right")
+        style_row=tk.Frame(form,bg=C['card'])
+        style_row.grid(row=6,column=0,columnspan=2,sticky='ew',pady=px(6))
+        tk.Label(style_row,text='画风确认（仅Q版手绘 / 官方立绘参与自动发送）',bg=C['card'],fg=C['text_soft'],font=font(9)).pack(anchor='w')
+        self.style=ttk.Combobox(style_row,values=list(STYLES.values()),state='readonly',style='Arona.TCombobox')
+        self.style.set(STYLES.get((sticker or {}).get('style','pending'),STYLES['pending']))
+        self.style.pack(fill='x',pady=px(4))
 
         self.add_footer("取消", self.close, "secondary", 90)
         self.add_footer("保存", self._save, "primary", 100)
@@ -100,6 +107,7 @@ class StickerDialog(BaseDialog):
         if not path:
             return
         self.source_file = path
+        self.style.set(STYLES[reviewed_style(path)])
         self.path_label.configure(text=Path(path).name)
         if not self.name.get():
             self.name.set(Path(path).stem)
@@ -122,13 +130,14 @@ class StickerDialog(BaseDialog):
         tags = [part.strip() for part in self.tags.get().replace("，", ",").split(",")
                 if part.strip()]
         try:
+            style=next((key for key,label in STYLES.items() if label==self.style.get()),'pending')
             if self.sticker is None:
                 if not self.source_file:
                     self._error.configure(text="请选择一张表情包图片。")
                     return
                 self.page.stickers.add_from_file(
                     self.source_file, name, self.emotion.get(), tags,
-                    self.description.get(),
+                    self.description.get(),style=style,
                 )
             else:
                 new_file = None
@@ -138,7 +147,7 @@ class StickerDialog(BaseDialog):
                 self.page.stickers.update(
                     self.sticker["id"],
                     {"name": name, "emotion": self.emotion.get(), "tags": tags,
-                     "description": self.description.get(), "enabled": self.enabled.get()},
+                     "description": self.description.get(), "enabled": self.enabled.get(),"style":style},
                     new_file=new_file,
                 )
             self.close()
@@ -230,7 +239,7 @@ class StickersPage(BasePage):
         self.search = SearchBox(toolbar, placeholder="搜索名称、标签或情绪…", width=24,
                                 command=self._search)
         self.search.pack(side="right", padx=(0, px(10)))
-        tk.Label(toolbar, text="AI 只能使用启用且存在的图片", bg=C["bg"],
+        tk.Label(toolbar, text="自动发送仅使用已确认的Q版手绘 / 官方立绘", bg=C["bg"],
                  fg=C["muted"], font=font(8)).pack(side="left", padx=(px(12), 0), pady=(px(8), 0))
 
         info = tk.Frame(wrap, bg=C["cyan_pale"], height=px(47))

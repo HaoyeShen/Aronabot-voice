@@ -14,6 +14,7 @@ from .model_audit import model_call
 from .model_client import make_client
 from .paths import DATA
 from .web_search import WebSearch, normalize_query, SEARCH_MARKER
+from .web_selection import ModelWebSelector
 from .link_reader import fetch_public
 from .bilibili_video import _related
 
@@ -66,7 +67,8 @@ class ProactiveArticles:
         for query in queries[:3]:
             if not query:
                 continue
-            for page in WebSearch().search(query, fresh=True):
+            for page in WebSearch().search(query, fresh=True, timeout_seconds=60,
+                                          selector=ModelWebSelector(profile)):
                 if page.url not in seen and all(p.url != page.url for p in pages):
                     pages.append(page)
             if len(pages) >= 3:

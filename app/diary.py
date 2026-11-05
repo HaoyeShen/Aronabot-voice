@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import threading
 import time
+import hashlib
 
 from .agent_runtime import RUNTIME
 from .config_store import _atomic_write_json as atomic_write_json
@@ -16,6 +17,7 @@ from .model_audit import model_call
 from .model_client import make_client
 from .paths import DATA,ROOT
 from .prompting import build_compact_system_prompt
+from .sticker_policy import allowed as sticker_allowed, fingerprint
 
 log=logging.getLogger(__name__)
 CHINA=timezone(timedelta(hours=8))
@@ -42,7 +44,7 @@ class DailyDiary:
 
     def activity(self,now):
         start=now.replace(hour=0,minute=0,second=0,microsecond=0).timestamp()
-        counts=dict(replies=0,voices=0,news=0,shares=0,web_queries=0)
+        counts=dict(replies=0,voices=0,news=0,shares=0,web_queries=0,moments_comments=0)
         private=set()
         memory=self.service.memory
         with memory._lock:
@@ -57,7 +59,34 @@ class DailyDiary:
             counts['replies']+=not meta.get('news') and not meta.get('proactive')
             counts['voices']+=len(meta.get('voice_bubbles') or []) or bool(meta.get('voice_sent'))
             counts['web_queries']+=bool((meta.get('web_search') or {}).get('searched'))
+        try:
+            reader=getattr(self.service,'moments_reader',None)
+            if reader:
+                counts['moments_comments']=sum(r.get('status')=='sent' and start<=r.get('at',0)<=now.timestamp()
+                                               for r in reader.load().values())
+        except Exception:
+            log.debug('日记暂未计入朋友圈评论统计')
         return counts,private
+
+    def sticker_options(self, records, key):
+        store=getattr(self.service,'stickers',None)
+        items=store.enabled() if store else default_stickers()
+        choices={}
+        for item in items:
+            path=store.path_for(item) if store else ROOT/item['file']
+            if not sticker_allowed(item,path):continue
+            digest=fingerprint(path)
+            choices.setdefault(digest,{**item,'_path':path,'_digest':digest})
+        history=[r for date,r in sorted(records.items()) if date!=key and r.get('status') in ('published','uncertain','publishing')
+                 and r.get('image_attached')]
+        recent={r.get('sticker_digest') for r in history[-3:]}
+        pool=[s for digest,s in choices.items() if digest not in recent] or list(choices.values())
+        last_style=history[-1].get('sticker_style') if history else None
+        def rank(item):
+            uses=sum(r.get('sticker_digest')==item['_digest'] for r in history)
+            tie=hashlib.sha256((key+item['id']).encode()).hexdigest()
+            return uses,item.get('style')==last_style,tie
+        return sorted(pool,key=rank)[:8]
 
     def prepare(self,now=None):
         now=now or diary_now();key=now.date().isoformat()
@@ -66,6 +95,7 @@ class DailyDiary:
         if key in records and (records[key].get('sealed') or records[key].get('status')!='draft'
                                or records[key].get('facts')==facts):return records[key]
         s=self.service;persona=s.personas.get('arona')
+        options=self.sticker_options(records,key)
         profile=dict(s.config.active_profile());profile.update(max_tokens=700,think=False)
         system=build_compact_system_prompt(persona,[],max_chars=600,max_sentence_chars=60,stickers_enabled=False)
         system+=('\n你在写阿洛娜的今日日记，发到自己的朋友圈。用第一人称、温柔元气的中文写80到300字，'
@@ -73,12 +103,21 @@ class DailyDiary:
                  '没有发生的事不能编造；安静的一天也可以简单写。不要虚构线下经历、身体动作或人类身份。'
                  '不写群名、微信昵称、个人经历、聊天原文、密码、API Key、模型名和内部配置。'
                  '只输出日记正文，不输出分析。')
+        if options:
+            system+=('\n配图仅从以下已审核画风的候选中选一张，结合日记语气；'
+                     '正文末尾另起一行 [DIARY_STICKER:候选id]，程序会去掉标记。候选：'
+                     +json.dumps([{'id':i['id'],'name':i['name'],'emotion':i.get('emotion'),
+                                   'description':i.get('description','')[:100]} for i in options],ensure_ascii=False))
         with RUNTIME.task('今日日记','朋友圈日记'):
             with RUNTIME.context('provided'):
                 result=model_call(make_client(profile),'chat','今日日记：当天活动总结',
                     [{'role':'user','content':json.dumps({'date':key,'activities':facts},ensure_ascii=False)}],system)
             s._record_usage(result,'朋友圈日记','diary')
         text=str(result.text or '').strip()
+        chosen=re.findall(r'\[DIARY_STICKER:([\w-]+)\]',text)
+        text=re.sub(r'\[DIARY_STICKER:[^\]\n]*\]','',text).strip()
+        if 'DIARY_STICKER' in text:raise ValueError('日记配图标记不完整')
+        sticker=next((s for s in options if chosen and s['id']==chosen[-1]),options[0] if options else None)
         if not 10<=len(text)<=1000:raise ValueError('日记正文长度不合格')
         for name in sorted(private,key=len,reverse=True):
             if len(name)>=2:text=text.replace(name,'老师')
@@ -86,6 +125,7 @@ class DailyDiary:
             raise ValueError('日记包含不适合公开的信息，已取消发布')
         text=f'【阿洛娜的今日日记 · {key}】\n'+text
         record={'date':key,'text':text,'status':'draft','facts':facts,'created_at':now.isoformat()}
+        if sticker:record['sticker_id']=sticker['id']
         self.folder.mkdir(parents=True,exist_ok=True)
         (self.folder/(key+'.md')).write_text(text+'\n',encoding='utf-8')
         records[key]=record;atomic_write_json(self.path,records)
@@ -120,17 +160,25 @@ class DailyDiary:
             adapter=s.adapter
             if not adapter or not adapter.connected:return {'ok':False,'message':'微信尚未连接，日记未发布。'}
             record=self.prepare(now)
+            options=self.sticker_options(records,key)
+            image=None
+            if attach_sticker if attach_sticker is not None else s.config.bot.get('diary_attach_sticker',True):
+                chosen=next((item for item in options if item['id']==record.get('sticker_id')),options[0] if options else None)
+                if chosen:
+                    image=chosen['_path']
+                    record.update(sticker_id=chosen['id'],sticker_digest=chosen['_digest'],sticker_style=chosen.get('style'))
+                    log.info('日记配图 · %s · %s · 画风=%s',key,chosen['name'],chosen.get('style'))
+            record['image_attached']=bool(image)
             # Flush intent before any network/UI commit. Crash recovery never
             # automatically resends a post with an uncertain outcome.
             records=self.load();record['status']='publishing';record['sealed']=True;records[key]=record
             atomic_write_json(self.path,records)
-            image=None
-            if attach_sticker if attach_sticker is not None else s.config.bot.get('diary_attach_sticker',True):
-                image=ROOT/default_stickers()[0]['file']
-                if not image.is_file():image=None
             with s._adapter_lock:
                 if adapter is not s._adapter or not s._running:
                     record['status']='draft';records[key]=record;atomic_write_json(self.path,records);return
+                if image and fingerprint(image)!=record.get('sticker_digest'):
+                    image=None;record['image_attached']=False
+                    records[key]=record;atomic_write_json(self.path,records)
                 result=adapter.publish_moment(record['text'],image)
             record['status']='published' if result.ok else ('uncertain' if result.detail=='uncertain' else 'draft')
             record['message']=result.message;record['updated_at']=now.isoformat()

@@ -164,6 +164,10 @@ class ListenReplyPage(BasePage):
             self.config.bot.get("auto_sticker", True),
         )
         self.auto_sticker.pack(fill="x", pady=px(5))
+        self.native_sticker=ToggleRow(reply.body,'允许微信原生动画表情',
+            '由同一Agent检索所有表情包页、查看画面并按语境选一张；不是emoji或普通图片。需启用Agent与视觉模型。',
+            self.config.bot.get('native_sticker_enabled',True))
+        self.native_sticker.pack(fill='x',pady=px(5))
         self.quiet = ToggleRow(
             reply.body, "免打扰时段",
             "该时段内只记录消息，不自动回复。",
@@ -186,9 +190,14 @@ class ListenReplyPage(BasePage):
 
         group_frame = tk.Frame(reply.body, bg=C["card"])
         group_frame.pack(fill="x", pady=(px(4), 0))
+        self.probability_first = ToggleRow(
+            group_frame, "先概率、再模型决定是否回复",
+            "持续监听并保存上下文；@ 和确认的连续追问直接回复，其余先抽概率，命中才由模型判断。关闭可恢复原关键词唤醒方式。",
+            self.config.bot.get("probability_first_reply", True))
+        self.probability_first.pack(fill="x")
         self.group_at_always = ToggleRow(
             group_frame, "群聊 @ 后必回复",
-            "被 @ 时不管概率多少，都会回复。",
+            "被 @ 时直接回复，不受普通消息概率影响；自动回复与免打扰总开关仍生效。",
             self.config.bot.get("group_at_always_reply", True),
         )
         self.group_at_always.pack(fill="x")
@@ -199,17 +208,17 @@ class ListenReplyPage(BasePage):
         )
         self.group_at_self_name.pack(fill="x")
         self.group_probability = ToggleRow(
-            group_frame, "群聊未 @ 概率回复",
-            "对阿洛娜、全群或符合参与门槛的讨论按概率回复；超过4人或连续超过15条即可参与，明确问他人则避开。",
+            group_frame, "启用群聊概率回复",
+            "普通群消息先抽概率，再由模型结合语境决定。关闭后仅 @ 和确认的连续追问直接回复。",
             self.config.bot.get("group_probability_reply", True),
         )
         self.group_probability.pack(fill="x")
         probability_row = tk.Frame(group_frame, bg=C["card"])
         probability_row.pack(fill="x", pady=(px(4), 0))
         self.group_probability_value = LabeledEntry(
-            probability_row, "未 @ 回复概率（%）",
-            str(round(float(self.config.bot.get("group_reply_probability", 0.3)) * 100)),
-            hint="0–100", width=8,
+            probability_row, "群聊回复概率（%）",
+            str(round(float(self.config.bot.get("group_reply_probability", 0.03)) * 100)),
+            hint="0–100，默认 3；每群可在测试对象中单独调整", width=8,
         )
         self.group_probability_value.pack(fill="x")
         self.followup_timeout = LabeledEntry(
@@ -218,7 +227,7 @@ class ListenReplyPage(BasePage):
             hint="默认 5，范围 1–1440", width=8,
         )
         self.followup_timeout.pack(fill="x", pady=(px(8), 0))
-        tk.Label(group_frame, text="@ 回复后可续聊；Agent 开启时，直接称呼唤醒也可续聊。\n确认仍对她说话就回复，连续 5 条无关发言或超时退出，各群独立。",
+        tk.Label(group_frame, text="@ 和已确认的连续追问不抽概率。\n@ 回复后可续聊；Agent 开启时，直接称呼唤醒也可续聊。\n确认仍对她说话就回复，连续 5 条无关发言或超时退出，各群独立。",
                  bg=C["card"], fg=C["muted"], font=font(7), anchor="w",
                  justify="left", wraplength=px(420)).pack(fill="x", pady=(px(4), 0))
 
@@ -441,7 +450,7 @@ class ListenReplyPage(BasePage):
         )
         self.trigger_enabled = ToggleRow(
             trigger.body, "启用名称/关键词触发",
-            "对阿洛娜说话时直接触发；第三人称公开讨论按群聊概率参与。",
+            "旧唤醒方式使用；统一概率模式下，提到关键词也不跳过抽签和模型判断。",
             self.config.bot.get("trigger_enabled", True),
         )
         self.trigger_enabled.pack(fill="x", pady=px(4))
@@ -495,7 +504,7 @@ class ListenReplyPage(BasePage):
             return
         self._web_test_busy = True
         self.web_test_btn.set_busy(True, "正在搜索并读取…")
-        self.web_test_status.configure(text="正在搜索、读取正文并检查知识库入库…", fg=C['cyan_deep'])
+        self.web_test_status.configure(text="正在搜索、模型筛选、读取正文并检查知识库入库…", fg=C['cyan_deep'])
         def worker() -> None:
             try:
                 result = self.service.test_web_search(query)
@@ -710,9 +719,10 @@ class ListenReplyPage(BasePage):
             if not math.isfinite(video_probability):
                 raise ValueError
             video_probability = max(0.0, min(100.0, video_probability))
-            probability = max(0, min(100, int(float(
-                self.group_probability_value.get() or 30
-            ))))
+            probability = float(self.group_probability_value.get() or 3)
+            if not math.isfinite(probability):
+                raise ValueError
+            probability = max(0.0, min(100.0, probability))
             voice_probability = max(0, min(100, int(float(
                 self.voice_probability.get() or 50
             ))))
@@ -732,13 +742,20 @@ class ListenReplyPage(BasePage):
         keywords = [line.strip() for line in
                     self.trigger_keywords.get("1.0", "end").replace("，", ",")
                     .replace("\n", ",").split(",") if line.strip()]
+        old_probability = float(self.config.bot.get('group_reply_probability', 0.03))
+        for target in self.config.targets():
+            if (target.get('type') == 'group'
+                    and float(target.get('group_reply_probability', old_probability)) == old_probability):
+                target['group_reply_probability'] = probability / 100.0
         self.config.bot.update({
             "auto_reply": self.auto_reply.get(),
             "auto_start": self.auto_start.get(),
             "auto_sticker": self.auto_sticker.get(),
+            "native_sticker_enabled":self.native_sticker.get(),
             "quiet_hours_enabled": self.quiet.get(),
             "quiet_start": self.quiet_start.get(),
             "quiet_end": self.quiet_end.get(),
+            "probability_first_reply": self.probability_first.get(),
             "group_at_always_reply": self.group_at_always.get(),
             "group_at_include_self_name": self.group_at_self_name.get(),
             "group_probability_reply": self.group_probability.get(),

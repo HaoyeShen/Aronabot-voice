@@ -185,7 +185,9 @@ class ModelClient:
         self.model = str(profile.get("model", "")).strip()
         self.api_key = unprotect(str(profile.get("api_key_enc", "")))
         self.temperature = float(profile.get("temperature", 0.8))
-        self.max_tokens = int(profile.get("max_tokens", 500))
+        from .reasoning import level, output_tokens
+        self.effort = level(profile.get("_reasoning_intensity"))
+        self.max_tokens = output_tokens(profile.get("max_tokens", 500), self.effort)
         self.timeout = max(10, min(300, int(profile.get("timeout", 90))))
         self.supports_vision = bool(profile.get("supports_vision", False))
         try:
@@ -287,10 +289,14 @@ class ModelClient:
     # -- Public API -------------------------------------------------------
     @audited('模型聊天')
     def chat(self, messages: list[dict], system: str = "") -> LLMResult:
+        from .reply_control import require_current_reply
+        require_current_reply()
         if self.provider == "mock":
             return self._mock_chat(messages)
         if not self.model:
             raise ModelError("尚未选择模型")
+        from .reasoning import instruction
+        system += instruction(self.effort)
         started = time.perf_counter()
         if self.provider == "ollama":
             log.info("本地模型请求 · %s · messages=%d · system=%d chars · num_ctx=%d · num_predict=%d · timeout=%ds",
@@ -337,6 +343,13 @@ class ModelClient:
                 "max_tokens": self.max_tokens,
                 "stream": False,
             }
+            # Explicit provider protocol only on the official DeepSeek host.
+            # Medium omits these fields to preserve legacy profile behaviour.
+            if (urllib.parse.urlparse(self.base_url).hostname == 'api.deepseek.com'
+                    and self.effort not in ('medium','high_consumption')):
+                payload['thinking'] = {'type': 'disabled' if self.effort == 'light' else 'enabled'}
+                if self.effort != 'light':
+                    payload['reasoning_effort'] = 'max' if self.effort == 'extreme' else 'high'
             data, attempts = self._with_retry(self._chat_endpoint(), payload)
             choices = data.get("choices") or []
             if not choices:
@@ -629,7 +642,11 @@ class ModelClient:
         # Strip the "[sender] " prefix used for group context.
         clean = re.sub(r"^\[[^\]]+\]\s*", "", raw)
         if any(w in clean for w in ("在吗", "你好", "早上好", "晚上好", "嗨", "hello", "hi")):
-            return "老师，阿洛娜在哦。今天也要一起加油吗？嘿嘿。"
+            return "老师，阿洛娜在。今天想聊什么？"
+        if '天气' in clean:
+            return '好天气确实让人心情轻松。'
+        if '随便聊聊' in clean:
+            return '大家聊，我也在听。'
         if "口令" in clean and any(w in clean for w in ("什么", "刚才", "记住的")):
             for previous in reversed(history[:-1]):
                 match = re.search(r"口令\s*[:：]\s*([^，。！？\n]{1,30})", previous)
@@ -642,7 +659,7 @@ class ModelClient:
         if any(w in clean for w in ("累", "难受", "不开心", "压力", "烦")):
             return "老师辛苦啦，先休息一下。 [sticker:小小委屈]"
         if any(w in clean for w in ("表情", "贴纸")):
-            return "给老师一张！今天也要开开心心的。 [sticker:开心转圈]"
+            return "给老师一张！今天也要开开心心的。 [sticker:好耶]"
         if "喜欢" in clean and ("什么" in clean or "吗" in clean):
             found = []
             for previous in history[:-1]:

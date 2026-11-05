@@ -203,7 +203,7 @@ def main() -> int:
     adapter._uia = fake_uia
     adapter._set_file_clipboard = lambda paths: True
     adapter._wait_outgoing = lambda *args, **kwargs: True
-    sticker = ROOT / "data" / "stickers" / "arona_hello.png"
+    sticker = ROOT / "data" / "stickers" / "arona_official_00.png"
     result2 = adapter.send_sticker("测试群", sticker)
     assert result2.ok, result2.message
     assert any("{Ctrl}v" in k for k in fake_uia.control.keys)

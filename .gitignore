@@ -38,3 +38,6 @@ dist/
 *.spec
 !ARONA.spec
 *.bak-*
+
+data/moments_comment_state.json
+

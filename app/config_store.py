@@ -18,6 +18,7 @@ from typing import Any, Iterable
 
 from .defaults import ARONA_PERSONA, PLANA_PERSONA, DEFAULT_CONFIG, default_stickers
 from .paths import CONFIG_FILE, PERSONAS_FILE, STICKERS_FILE, STICKER_DIR, ROOT, ensure_dirs
+from .sticker_policy import reviewed_style, allowed as sticker_allowed
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +109,7 @@ class ConfigStore:
                 data[section] = copy.deepcopy(DEFAULT_CONFIG[section])
         admin = data.setdefault("admin", {})
         admin["password"] = str(admin.get("password") or secrets.token_urlsafe(12))
+        admin['cross_chat_enabled'] = bool(admin.get('cross_chat_enabled', True))
         allowed = admin.get("allowed")
         if isinstance(allowed, str):
             allowed = [line.strip() for line in allowed.splitlines() if line.strip()]
@@ -144,6 +146,14 @@ class ConfigStore:
         except (TypeError, ValueError):
             admin["off_seconds"] = 3600
         bot = data.setdefault("bot", {})
+        bot["roleplay_free_mode"]=bool(bot.get("roleplay_free_mode",False))
+        bot['native_sticker_enabled']=bool(bot.get('native_sticker_enabled',True))
+        from .reasoning import level
+        bot['reasoning_intensity']=level(bot.get('reasoning_intensity'))
+        bot['moments_comment_enabled']=bool(bot.get('moments_comment_enabled',False))
+        bot.pop('singing_enabled',None)  # Singing task cancelled by the user.
+        try:bot['moments_comment_interval_minutes']=max(5,min(1440,int(bot.get('moments_comment_interval_minutes',30))))
+        except (ValueError,TypeError):bot['moments_comment_interval_minutes']=30
         for key in ('diary_enabled','diary_attach_sticker'):
             bot[key]=bool(bot.get(key,False if key=='diary_enabled' else True))
         diary_time=str(bot.get('diary_time','22:00'))
@@ -176,10 +186,13 @@ class ConfigStore:
         bot["auto_start"] = bool(bot.get("auto_start", True))
         bot["group_at_always_reply"] = bool(bot.get("group_at_always_reply", True))
         bot["group_probability_reply"] = bool(bot.get("group_probability_reply", True))
+        bot["probability_first_reply"] = bool(bot.get("probability_first_reply", True))
         try:
-            group_probability = float(bot.get("group_reply_probability", 0.3))
+            group_probability = float(bot.get("group_reply_probability", 0.03))
+            if not math.isfinite(group_probability):
+                raise ValueError("non-finite probability")
         except (TypeError, ValueError):
-            group_probability = 0.3
+            group_probability = 0.03
         bot["group_reply_probability"] = max(0.0, min(1.0, group_probability))
         bot["group_at_include_self_name"] = bool(bot.get("group_at_include_self_name", True))
         bot["idle_chat_enabled"] = bool(bot.get("idle_chat_enabled", True))
@@ -299,16 +312,20 @@ class ConfigStore:
             except (TypeError, ValueError):
                 target_context = int(bot["context_limit"])
             try:
-                target_probability = float(t.get("reply_probability", 1.0))
+                target_probability = float(t.get("reply_probability", 0.03 if bot["probability_first_reply"] else 1.0))
+                if not math.isfinite(target_probability):
+                    raise ValueError("non-finite probability")
             except (TypeError, ValueError):
-                target_probability = 1.0
+                target_probability = 0.03 if bot["probability_first_reply"] else 1.0
             try:
                 target_group_probability = float(t.get(
                     "group_reply_probability",
-                    bot.get("group_reply_probability", 0.3),
+                    bot.get("group_reply_probability", 0.03),
                 ))
             except (TypeError, ValueError):
-                target_group_probability = float(bot.get("group_reply_probability", 0.3))
+                target_group_probability = float(bot.get("group_reply_probability", 0.03))
+            if not math.isfinite(target_group_probability):
+                target_group_probability = bot["group_reply_probability"]
             try:
                 news_time = str(t.get("news_time") or "06:50")
                 _nh, _nm = news_time.split(":", 1)
@@ -324,6 +341,7 @@ class ConfigStore:
                 "persona_id": t.get("persona_id") or data.get("active_persona_id", "arona"),
                 "require_at": bool(t.get("require_at", True)),
                 "context_limit": max(20, min(100, target_context)),
+                "shared_memory_enabled": bool(t.get('shared_memory_enabled', False)),
                 "reply_probability": max(0.0, min(1.0, target_probability)),
                 "group_reply_probability": max(0.0, min(1.0, target_group_probability)),
                 "news_enabled": bool(t.get("news_enabled", False)),
@@ -406,8 +424,8 @@ class ConfigStore:
         pid = self.data.get("active_profile_id")
         for profile in self.data.get("model_profiles", []):
             if profile.get("id") == pid:
-                return profile
-        return self.data["model_profiles"][0]
+                return {**profile, "_reasoning_intensity": self.bot.get("reasoning_intensity", "medium")}
+        return {**self.data["model_profiles"][0], "_reasoning_intensity": self.bot.get("reasoning_intensity", "medium")} 
 
     def profile_by_id(self, profile_id: str) -> dict | None:
         return next((p for p in self.data.get("model_profiles", [])
@@ -469,7 +487,7 @@ class ConfigStore:
                 "persona_id": persona_id,
                 "require_at": require_at,
                 "context_limit": self.bot.get("context_limit", 30),
-                "reply_probability": 1.0,
+                "reply_probability": self.bot.get("group_reply_probability", 0.03) if self.bot.get("probability_first_reply", True) else 1.0,
                 "note": note,
                 "added_at": _now(),
             }
@@ -638,6 +656,7 @@ class StickerStore:
                     item.setdefault("tags", [])
                     item.setdefault("description", "")
                     item.setdefault("emotion", "开心")
+                    item['style'] = reviewed_style(self._resolve(item['file']), item.get('style','pending'))
                     item.setdefault("enabled", True)
                     item.setdefault("builtin", False)
                     item.setdefault("created_at", _now())
@@ -662,7 +681,8 @@ class StickerStore:
 
     def enabled(self) -> list[dict]:
         return [copy.deepcopy(s) for s in self.items
-                if s.get("enabled") and self._resolve(s.get("file", "")).is_file()]
+                if s.get("enabled") and self._resolve(s.get("file", "")).is_file()
+                and sticker_allowed(s,self._resolve(s.get('file','')))]
 
     def get(self, sticker_id: str) -> dict | None:
         item = next((s for s in self.items if s.get("id") == sticker_id), None)
@@ -684,7 +704,7 @@ class StickerStore:
         return self._resolve(str(item.get("file", "")))
 
     def add_from_file(self, source: str | Path, name: str, emotion: str = "开心",
-                      tags: Iterable[str] = (), description: str = "") -> dict:
+                      tags: Iterable[str] = (), description: str = "", style: str = 'pending') -> dict:
         src = Path(source)
         if not src.is_file():
             raise ValueError("表情包文件不存在")
@@ -707,6 +727,7 @@ class StickerStore:
                 "file": str(dest.relative_to(ROOT)) if dest.is_relative_to(ROOT) else str(dest),
                 "tags": [str(t).strip() for t in tags if str(t).strip()],
                 "description": description.strip(),
+                "style": reviewed_style(dest,style),
                 "emotion": emotion.strip() or "开心",
                 "enabled": True,
                 "builtin": False,
@@ -743,9 +764,11 @@ class StickerStore:
                     except OSError:
                         log.warning("无法删除旧表情包文件：%s", old_path)
                 item["file"] = str(dest.relative_to(ROOT)) if dest.is_relative_to(ROOT) else str(dest)
-            for key in ("name", "emotion", "description", "enabled"):
+                item['style']=reviewed_style(dest,patch.get('style','pending'))
+            for key in ("name", "emotion", "description", "enabled", "style"):
                 if key in patch:
                     item[key] = patch[key]
+            item['style'] = reviewed_style(self.path_for(item),item.get('style','pending'))
             if "tags" in patch:
                 tags = patch["tags"]
                 if isinstance(tags, str):
@@ -787,6 +810,7 @@ class StickerStore:
                 "file": str(path.relative_to(ROOT)),
                 "tags": [],
                 "description": "从表情包目录自动发现。",
+                "style": reviewed_style(path),
                 "emotion": "开心",
                 "enabled": True,
                 "builtin": False,

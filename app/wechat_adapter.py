@@ -23,6 +23,8 @@ import re
 
 from .paths import DATA
 
+from .reply_control import fresh_send, reply_current
+
 log = logging.getLogger(__name__)
 
 
@@ -127,9 +129,11 @@ class BaseWeChatAdapter:
         self._running = False
         self.connected = False
 
+    @fresh_send
     def send_text(self, chat: str, text: str) -> SendResult:
         raise NotImplementedError
 
+    @fresh_send
     def send_quoted_text(self, chat: str, text: str, quote_text: str = "",
                          quote_kind: str = "text") -> SendResult:
         """Adapters without native quote support fall back to a normal text."""
@@ -145,11 +149,21 @@ class BaseWeChatAdapter:
     def publish_moment(self,text: str,image_path=None) -> SendResult:
         return SendResult(False,'当前适配器不支持朋友圈发布，日记草稿已保留。')
 
+    def read_moments(self, limit=30):
+        return []
+
+    def comment_moment(self, post, text, *, dry_run=False, allowed=lambda:True) -> SendResult:
+        return SendResult(False, '当前适配器不支持朋友圈评论。')
+
     def canonical_chat(self, chat: str) -> str:
         return str(chat or "").strip()
 
     def chat_identity(self, chat: str) -> str:
         return self.canonical_chat(chat)
+
+    def resolve_action_target(self, chat: str) -> dict | None:
+        """Only concrete adapters with exact contact lookup enable remote actions."""
+        return None
 
     def is_same_chat(self, current: str, expected: str) -> bool:
         return bool(current and expected and current.strip() == expected.strip())
@@ -226,6 +240,7 @@ class BaseWeChatAdapter:
         time.sleep(0.8)
         return True
 
+    @fresh_send
     def send_quoted_text(self, chat: str, text: str, quote_text: str = "",
                          quote_kind: str = "text") -> SendResult:
         if not text.strip():
@@ -261,17 +276,25 @@ class BaseWeChatAdapter:
                 if not self._uia._uia_click_menu_item(menu):
                     return SendResult(False, "引用失败：无法点击引用菜单")
                 time.sleep(0.6)
+                if not reply_current():return SendResult(False,"原消息已过期，取消发送","expired")
                 ok = bool(self._uia.send_text(text))
             except Exception as exc:
                 log.exception("wechatauto 引用发送失败")
+                if getattr(self,'_exact_outgoing_after',lambda *_:False)(username,before,text):
+                    self._remember_sent(chat,text)
+                    return SendResult(True,'引用消息已确认发送')
                 return SendResult(False, "引用发送失败", str(exc))
         if not ok:
+            if getattr(self,'_exact_outgoing_after',lambda *_:False)(username,before,text):
+                self._remember_sent(chat,text)
+                return SendResult(True,'引用消息已确认发送')
             return SendResult(False, "引用后 UIA 输入/发送校验失败")
         self._remember_sent(chat, text)
         if username and not self._wait_outgoing(username, before, "text", timeout=3.0):
             log.warning("wechatauto 已执行引用发送，但数据库尚未确认：%s", chat)
         return SendResult(True, "已引用发送")
 
+    @fresh_send
     def send_sticker(self, chat: str, path: Path) -> SendResult:
         raise NotImplementedError
 
@@ -314,6 +337,8 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
         self._listener = None
         self._uia = None
         self._media = None
+        self._emoji_reader = None
+        self._native_stickers = None
         self._ui_lock = threading.RLock()
         self._targets_by_user: dict[str, dict] = {}
         self._usernames: dict[str, str] = {}
@@ -466,6 +491,20 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
         self._targets_by_user = {}
         self._usernames = {}
         self._chat_aliases: dict[str, list[str]] = {}
+        self.private_admin_identities = {}
+        targets = list(targets)
+        for name in self.config.get('private_admins', []):
+            if not isinstance(name, str) or name == '__self__':
+                continue
+            resolved = self.resolve_action_target(name)
+            if not resolved or resolved['identity'].endswith('@chatroom'):
+                log.warning('管理员私聊身份未唯一匹配，未添加监听：%s', name)
+                continue
+            self.private_admin_identities[name] = resolved['identity']
+            if name not in self._targets:
+                private_target = {'name': name, 'type': 'friend', 'enabled': True, '_admin_private': True}
+                targets.append(private_target)
+                self._targets[name] = private_target
         failures = []
         for target in targets:
             name = target["name"]
@@ -549,7 +588,12 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
             "视频": "video", "video": "video", "文件": "file", "file": "file",
             "链接": "link", "link": "link", "引用": "quote", "quote": "quote",
             "系统": "system", "system": "system",
+            "动画表情":"emotion", "表情包":"emotion", "贴纸":"emotion", "emoji":"emotion", "sticker":"emotion",
         }
+        try:
+            code=int(value)&0xFFFFFFFF
+            if code in (47,11000):return 'emotion'
+        except (ValueError,TypeError):pass
         return mapping.get(text, text or "text")
 
     def _display_sender(self, username: str, target: dict, outgoing: bool) -> str:
@@ -586,6 +630,14 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
         content = str(msg.get("content") or "").strip()
         msg_type = self._message_type_name(msg.get("type"))
         image_path = self._download_incoming_image(msg) if msg_type == "image" else ""
+        if msg_type=='emotion' or '<emoji' in content:
+            from .wechat_emojis import WeChatEmojiReader
+            msg_type='emotion'
+            if self._emoji_reader is None:self._emoji_reader=WeChatEmojiReader(self._db)
+            try:image_path,content=self._emoji_reader.read(msg)
+            except Exception as exc:
+                log.warning('微信表情读取失败：%s',type(exc).__name__)
+                content='[微信表情包：图片暂不可用，不判断具体画面]'
         outgoing = bool(self.self_wxid and sender_username == self.self_wxid)
         if not sender_username and username == "filehelper":
             outgoing = True
@@ -713,6 +765,22 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
 
     def chat_identity(self, chat: str) -> str:
         return self._usernames.get(chat) or self._resolve_username(chat) or ''
+
+    def resolve_action_target(self, chat: str) -> dict | None:
+        name = str(chat or '').strip()
+        if not name or not self._db:
+            return None
+        try:
+            hits = self._db.search_contact(name)
+            matches = {str(row['username']) for row in hits if row.get('username')
+                       and name in (row.get('remark'), row.get('nick_name'), row.get('username'))}
+            if len(matches) != 1 or len(hits) >= 50:
+                return None
+            identity = matches.pop()
+            self._usernames[name] = identity
+            return {'chat': name, 'identity': identity}
+        except Exception:
+            return None
 
     def is_same_chat(self, current: str, expected: str) -> bool:
         if not current or not expected:
@@ -880,6 +948,28 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
                 log.warning('语音提交失败：%s',type(exc).__name__)
                 return SendResult(False,'语音提交失败')
 
+    def _exact_outgoing_after(self, username, before_seq, text):
+        """Confirm this exact commit before quote failure falls back to plain text."""
+        if not username or not before_seq:return False
+        import xml.etree.ElementTree as ET
+        expected=re.sub(r'\s+','',str(text))
+        deadline=time.monotonic()+1.2
+        while True:
+            try:
+                for row in self._db.get_messages(username,limit=15):
+                    content=str(row.get('content') or '')
+                    content=re.sub(r'^wxid_[^:\n]+:\n','',content)
+                    if '<appmsg' in content and '<!DOCTYPE' not in content and '<!ENTITY' not in content:
+                        try:content=ET.fromstring(content).findtext('.//appmsg/title') or content
+                        except ET.ParseError:pass
+                    if (int(row.get('sort_seq') or 0)>before_seq
+                            and row.get('sender_username')==self.self_wxid
+                            and re.sub(r'\s+','',content)==expected):return True
+            except Exception:
+                return False
+            if time.monotonic()>=deadline:return False
+            time.sleep(.15)
+
     def _wait_outgoing(self, username: str, before_seq: int, expected_type: str,
                        timeout: float = 6.0) -> bool:
         deadline = time.time() + timeout
@@ -896,14 +986,29 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
             time.sleep(0.5)
         return False
 
+    def read_moments(self, limit=30):
+        from wechatauto.moment import MomentDB
+        with self._ui_lock:
+            if not self._db:
+                return []
+            return MomentDB(self._db).get_moments(limit=max(1,min(30,int(limit))),since=int(time.time())-86400)
+
+    def comment_moment(self, post, text, *, dry_run=False, allowed=lambda:True) -> SendResult:
+        from .moments_comment import submit
+        with self._ui_lock:
+            return submit(self,post,text,dry_run=dry_run,allowed=allowed)
+
     def publish_moment(self,text: str,image_path=None,*,dry_run=False) -> SendResult:
         from .moments_publish import publish
         with self._ui_lock:
             return publish(self,text,image_path,dry_run=dry_run)
 
+    @fresh_send
     def send_text(self, chat: str, text: str) -> SendResult:
         if not text.strip():
             return SendResult(False, "消息内容为空")
+        from .tool_protocol import internal_output
+        if internal_output(text):return SendResult(False,'内部工具指令已拦截，未发送微信')
         chat = self.canonical_chat(chat)
         username = self._usernames.get(chat, "")
         before = self._last_seq(username) if username else 0
@@ -911,6 +1016,7 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
             if not self._open_chat(chat):
                 return SendResult(False, "无法打开微信会话", chat)
             try:
+                if not reply_current():return SendResult(False,"原消息已过期，取消发送","expired")
                 ok = bool(self._uia.send_text(text))
             except Exception as exc:
                 log.exception("wechatauto 发送失败")
@@ -922,6 +1028,7 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
             log.warning("wechatauto 已执行发送，但数据库尚未确认：%s", chat)
         return SendResult(True, "已发送")
 
+    @fresh_send
     def send_sticker(self, chat: str, path: Path) -> SendResult:
         if not Path(path).is_file():
             return SendResult(False, "表情包文件不存在", str(path))
@@ -950,6 +1057,56 @@ class WeChatAutoAdapter(BaseWeChatAdapter):
         if username and not self._wait_outgoing(username, before, "image", timeout=6.0):
             return SendResult(False, "数据库未确认图片已发出")
         return SendResult(True, "表情包已发送")
+
+    def native_stickers(self):
+        from .native_stickers import NativeStickers
+        if not self._db:raise RuntimeError('微信未连接')
+        if self._native_stickers is None:self._native_stickers=NativeStickers(self._db)
+        return self._native_stickers
+
+    @fresh_send
+    def send_native_sticker(self,chat,entry,*,allowed=lambda:True):
+        from .native_sticker_panel import NativeStickerPanel
+        from .wechat_emojis import emoji_node
+        attempted=False;panel=None
+        with self._ui_lock:
+            uia=self._uia
+            if not uia or not self._open_chat(chat):return SendResult(False,'无法打开原生表情目标会话')
+            store=self.native_stickers();catalog=store.catalog()
+            current=store.entries.get(entry.get('id'))
+            if not current or current['md5']!=entry.get('md5'):return SendResult(False,'动画表情目录已变化，取消发送')
+            username=self._usernames.get(self.canonical_chat(chat),'')
+            before=self._last_seq(username)
+            if not username or not before:return SendResult(False,'无法建立发送前数据库基线，未发送动画表情')
+            try:
+                panel=NativeStickerPanel(uia).open()
+                target=None
+                for page in catalog['pages']:
+                    if current['id'] not in {i['id'] for i in page['items']}:continue
+                    try:target=panel.target(current,page);break
+                    except ValueError:continue
+                if target is None:return SendResult(False,'无法准确定位原生动画表情，不改发普通图片')
+                if not reply_current() or not allowed() or not self.is_same_chat(uia.current_chat(),chat):
+                    return SendResult(False,'发送前会话变化或消息过期，取消动画表情')
+                if not panel.foreground():return SendResult(False,'微信表情面板不在前台，取消发送')
+                attempted=True
+                uia._click_ctrl(target)
+                deadline=time.monotonic()+6
+                while time.monotonic()<deadline:
+                    for row in self._db.get_messages(username,limit=12):
+                        if int(row.get('sort_seq') or 0)<=before or row.get('sender_username')!=self.self_wxid:continue
+                        if self._message_type_name(row.get('type'))!='emotion':continue
+                        node=emoji_node(row.get('content'))
+                        if node is not None and node.get('md5','').lower()==current['md5']:
+                            self._remember_sent(chat,'__native_sticker__')
+                            return SendResult(True,'微信原生动画表情已发送并核对MD5')
+                    time.sleep(.25)
+                return SendResult(False,'已点击原生表情，数据库尚未确认；不重复发送','uncertain')
+            except Exception as exc:
+                log.warning('原生动画表情未完成：%s',type(exc).__name__)
+                return SendResult(False,'原生动画表情发送未完成','uncertain' if attempted else '')
+            finally:
+                if panel:panel.close()
 
     def fetch_recent(self, chat: str, limit: int) -> list[HistoryMessage]:
         chat = self.canonical_chat(chat)

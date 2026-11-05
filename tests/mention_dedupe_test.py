@@ -15,6 +15,7 @@ from tests.service_test import FakeAdapter
 with tempfile.TemporaryDirectory() as tmp:
     base = Path(tmp)
     config = ConfigStore(base/'config.json')
+    config.bot["probability_first_reply"] = False  # Legacy wake-up regression coverage.
     config.set_active_profile('demo-local')
     target = config.add_target('test', 'group', 'arona')
     config.bot.update(auto_reply=True, group_reply_probability=0, voice_enabled=False, auto_sticker=False,

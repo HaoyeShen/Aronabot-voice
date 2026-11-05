@@ -88,6 +88,8 @@ def audited(default_purpose):
 
 
 def model_call(client, method, purpose, *args, **kwargs):
+    from .reply_control import require_current_reply
+    require_current_reply()
     token = _purpose.set(purpose)
     try:
         from .agent_runtime import RUNTIME

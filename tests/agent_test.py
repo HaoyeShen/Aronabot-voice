@@ -112,6 +112,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp)
         config = ConfigStore(base/'config.json')
+        config.bot["probability_first_reply"] = False  # Legacy wake-up regression coverage.
         config.add_target('test', 'group', 'arona')
         config.bot.update(agent_enabled=True, agent_max_steps=4, agent_timeout_seconds=30,
                           web_search_enabled=True, voice_enabled=False, auto_sticker=False,

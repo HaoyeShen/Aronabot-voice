@@ -43,6 +43,7 @@ DEFAULT_CONFIG = {
         "password": "",
         "allowed": ["__self__"],
         "off_seconds": 3600,
+        "cross_chat_enabled": True,
     },
     "news": {
         "enabled": False,
@@ -62,12 +63,17 @@ DEFAULT_CONFIG = {
         "keep_subwindows": True,
     },
     "bot": {
+        "roleplay_free_mode": False,
+        "reasoning_intensity": "medium",
+        "moments_comment_enabled": False,
+        "moments_comment_interval_minutes": 30,
         "diary_enabled": False,
         "diary_time": "22:00",
         "diary_attach_sticker": True,
         "auto_reply": True,
         "auto_start": True,
         "auto_sticker": True,
+        "native_sticker_enabled": True,
         "sticker_probability": 0.35,
         "context_limit": 30,
         "max_reply_chars": 25,
@@ -75,7 +81,8 @@ DEFAULT_CONFIG = {
         "max_reply_bubbles": 20,
         "group_at_always_reply": True,
         "group_probability_reply": True,
-        "group_reply_probability": 0.3,
+        "probability_first_reply": True,
+        "group_reply_probability": 0.03,
         "followup_timeout_minutes": 5,
         "idle_chat_enabled": True,
         "idle_chat_probability": 0.03,
@@ -285,69 +292,125 @@ DEFAULT_PERSONAS = [ARONA_PERSONA, PLANA_PERSONA]
 
 STICKER_SEEDS = [
     {
-        "id": "arona_hello",
-        "name": "挥手问候",
-        "file": "data/stickers/arona_hello.png",
-        "tags": ["你好", "在吗", "早安", "问候", "开心"],
-        "description": "阿洛娜挥着手，笑眯眯地回应老师。适合打招呼、被叫到名字时。",
+        "id": "arona_official_00",
+        "name": "在呢",
+        "file": "data/stickers/arona_official_00.png",
+        "tags": [
+            "在吗",
+            "在呢",
+            "回应",
+            "叫名字",
+            "日常"
+        ],
+        "description": "阿洛娜微微笑着看过来，适合被叫到名字、确认在线时。",
         "emotion": "开心",
+        "style": "official_portrait"
     },
     {
-        "id": "arona_happy",
-        "name": "开心转圈",
-        "file": "data/stickers/arona_happy.png",
-        "tags": ["好耶", "开心", "表扬", "庆祝", "成功"],
-        "description": "阿洛娜眼睛发亮、周围冒着小星星跳起来。适合好消息、被夸奖、庆祝。",
+        "id": "arona_official_01",
+        "name": "老师好",
+        "file": "data/stickers/arona_official_01.png",
+        "tags": [
+            "你好",
+            "老师好",
+            "问候",
+            "早安",
+            "打招呼"
+        ],
+        "description": "阿洛娜眼睛亮亮地打招呼，适合开场、问候。",
         "emotion": "开心",
+        "style": "official_portrait"
     },
     {
-        "id": "arona_shy",
-        "name": "害羞脸红",
-        "file": "data/stickers/arona_shy.png",
-        "tags": ["害羞", "喜欢", "被夸", "不好意思", "谢谢"],
-        "description": "阿洛娜红着脸、视线飘向一边。适合被夸、收到感谢、被逗时。",
-        "emotion": "害羞",
-    },
-    {
-        "id": "arona_think",
-        "name": "认真思考",
-        "file": "data/stickers/arona_think.png",
-        "tags": ["思考", "疑问", "让我想想", "分析", "唔"],
-        "description": "阿洛娜托着下巴，头顶冒出一个问号。适合思考、需要一点时间时。",
-        "emotion": "思考",
-    },
-    {
-        "id": "arona_sad",
-        "name": "小小委屈",
-        "file": "data/stickers/arona_sad.png",
-        "tags": ["委屈", "难过", "安慰", "求抱抱", "失落"],
-        "description": "阿洛娜眼角挂着泪珠，可怜巴巴。适合安慰、表达小小的委屈。",
-        "emotion": "难过",
-    },
-    {
-        "id": "arona_angry",
-        "name": "气鼓鼓",
-        "file": "data/stickers/arona_angry.png",
-        "tags": ["生气", "抗议", "不满", "哼", "吃醋"],
-        "description": "阿洛娜鼓起脸颊，头上冒出粉色怒符。适合玩笑式的抗议、撒娇式不满。",
-        "emotion": "生气",
-    },
-    {
-        "id": "arona_sleepy",
-        "name": "困困打盹",
-        "file": "data/stickers/arona_sleepy.png",
-        "tags": ["困", "晚安", "累了", "睡觉", "休息"],
-        "description": "阿洛娜半闭着眼，旁边飘着 Zzz。适合深夜、晚安、提醒休息。",
-        "emotion": "困倦",
-    },
-    {
-        "id": "arona_confused",
-        "name": "满头问号",
-        "file": "data/stickers/arona_confused.png",
-        "tags": ["疑惑", "不懂", "惊讶", "诶", "什么意思"],
-        "description": "阿洛娜歪着头，旁边冒出好几个问号。适合没听懂、惊讶、疑惑。",
+        "id": "arona_official_02",
+        "name": "诶？",
+        "file": "data/stickers/arona_official_02.png",
+        "tags": [
+            "诶",
+            "疑惑",
+            "惊讶",
+            "不懂",
+            "什么"
+        ],
+        "description": "阿洛娜微微张嘴，适合没听懂、惊讶或确认消息时。",
         "emotion": "疑惑",
+        "style": "official_portrait"
     },
+    {
+        "id": "arona_official_03",
+        "name": "好耶",
+        "file": "data/stickers/arona_official_03.png",
+        "tags": [
+            "好耶",
+            "开心",
+            "庆祝",
+            "成功",
+            "表扬"
+        ],
+        "description": "阿洛娜闭眼笑弯弯，适合好消息、被夸奖、庆祝。",
+        "emotion": "开心",
+        "style": "official_portrait"
+    },
+    {
+        "id": "arona_official_04",
+        "name": "愣住",
+        "file": "data/stickers/arona_official_04.png",
+        "tags": [
+            "啊这",
+            "愣住",
+            "惊讶",
+            "无语",
+            "突然"
+        ],
+        "description": "阿洛娜突然愣住，适合意外、无语、被问住时。",
+        "emotion": "疑惑",
+        "style": "official_portrait"
+    },
+    {
+        "id": "arona_official_05",
+        "name": "哼！",
+        "file": "data/stickers/arona_official_05.png",
+        "tags": [
+            "哼",
+            "不满",
+            "吃醋",
+            "抗议",
+            "傲娇"
+        ],
+        "description": "阿洛娜鼓起脸，适合玩笑式抗议、撒娇式不满。",
+        "emotion": "生气",
+        "style": "official_portrait"
+    },
+    {
+        "id": "arona_official_06",
+        "name": "红温",
+        "file": "data/stickers/arona_official_06.png",
+        "tags": [
+            "红温",
+            "生气",
+            "气鼓鼓",
+            "愤怒",
+            "吃醋"
+        ],
+        "description": "阿洛娜脸红着冒火，适合真的有点生气、吃醋时。",
+        "emotion": "生气",
+        "style": "official_portrait"
+    },
+    {
+        "id": "arona_official_07",
+        "name": "委屈",
+        "file": "data/stickers/arona_official_07.png",
+        "tags": [
+            "委屈",
+            "想哭",
+            "难过",
+            "安慰",
+            "心碎"
+        ],
+        "description": "阿洛娜眼角发红，适合难过、求安慰、受委屈时。",
+        "emotion": "难过",
+        "style": "official_portrait"
+    }
 ]
 
 

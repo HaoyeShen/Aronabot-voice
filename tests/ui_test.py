@@ -161,6 +161,17 @@ def main() -> int:
             print("page ok:", key, app.pages[key].winfo_reqwidth(),
                   app.pages[key].winfo_reqheight())
         page_targets = app.pages["targets"]
+        settings = app.pages['settings']
+        assert not settings.free_mode.get()
+        settings.free_mode.set(True)
+        settings.effort.set('高消耗')
+        settings.save()
+        saved_settings = ConfigStore(config.path)
+        assert saved_settings.bot['roleplay_free_mode'] is True
+        assert saved_settings.bot['reasoning_intensity'] == 'high_consumption'
+        settings.free_mode.set(False)
+        settings.effort.set('中')
+        settings.save()
         assert page_targets.news_test_chat.get() == 'test'
         page_targets.news_test_chat.set('')
         with patch.object(service, 'send_test_news') as send:
@@ -189,6 +200,8 @@ def main() -> int:
         assert ConfigStore(config.path).data['news']['test_chat'] == '可设置的新闻测试群'
         # The manual test stays responsive and completes after navigating away.
         reply_page = app.pages['listen_reply']
+        assert reply_page.probability_first.get()
+        assert float(reply_page.group_probability_value.get()) == 3
         assert reply_page.web_search_enabled.get()
         assert reply_page.agent_enabled.get()
         assert reply_page.baidu_baike_enabled.get()
@@ -312,10 +325,14 @@ def main() -> int:
         for name, topics in [('主题界面群A', 'Python，蔚蓝档案'), ('主题界面群B', '明日方舟')]:
             dialog = TargetDialog(root, page_targets, config.target_by_name(name))
             assert dialog.idle_video_topics.winfo_manager() == 'pack'
+            assert not dialog.shared_memory.get()
+            dialog.shared_memory.set(name == '主题界面群A')
             dialog.idle_video_topics.set(topics)
             with patch.object(app, 'reload_listening'):
                 dialog._save()
         saved = ConfigStore(config.path)
+        assert saved.target_by_name('主题界面群A')['shared_memory_enabled'] is True
+        assert saved.target_by_name('主题界面群B')['shared_memory_enabled'] is False
         assert saved.target_by_name('主题界面群A')['idle_video_topics'] == ['Python', '蔚蓝档案']
         assert saved.target_by_name('主题界面群B')['idle_video_topics'] == ['明日方舟']
         dialog = TargetDialog(root, page_targets, config.target_by_name('主题界面群A'))
@@ -392,7 +409,7 @@ def main() -> int:
                  "profile_name": "mock:arona-demo", "latency_ms": 200,
                  "user_content": "你好", "content": "老师，阿洛娜在哦。",
                  "sticker_name": "挥手问候",
-                 "sticker_path": str(ROOT / "data/stickers/arona_hello.png")},
+                 "sticker_path": str(ROOT / "data/stickers/arona_official_00.png")},
                 bank=app.bank, icon=icon)),
         ]
         for name, factory in dialogs:

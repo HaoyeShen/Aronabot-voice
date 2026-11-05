@@ -502,7 +502,7 @@ class MainWindow:
         if kind == "news_test_done":
             self.pages["targets"].on_event(kind, data)
             return
-        if kind in ('diary_preview_done','diary_publish_done','diary_status'):
+        if kind in ('diary_preview_done','diary_publish_done','diary_status','moments_preview_done','moments_status'):
             self.pages['settings'].on_event(kind,data)
             return
         page = self.pages.get(self._current_page)

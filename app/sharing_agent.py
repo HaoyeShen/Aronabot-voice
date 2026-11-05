@@ -13,6 +13,7 @@ import urllib.parse
 from pathlib import Path
 
 from .agent import AgentRunner, AgentTool, AgentObservation
+from .reasoning import agent_budget, legacy_mode
 from .agent_runtime import RUNTIME
 from .evidence_text import evidence_excerpt
 from .model_client import make_client, ModelError
@@ -38,6 +39,7 @@ def run_sharing_task(service, chat, target, persona, *, mode='AUTO', now=None, b
     history = service.memory.recent(chat, 8)
     user_lines = [str(r.get('content') or '') for r in history if r.get('role') == 'user'
                   and not (r.get('meta') or {}).get('manual')
+                  and not (r.get('meta') or {}).get('stale')
                   and (r.get('meta') or {}).get('direction') != 'out']
     videos, pages, images, seen_images = {}, {}, {}, set()
     grouped = {}
@@ -79,8 +81,8 @@ def run_sharing_task(service, chat, target, persona, *, mode='AUTO', now=None, b
         videos[video.bvid] = video
         return observation({'status':'OK', 'video':{
             'bvid':video.bvid, 'title':video.title, 'topic':video.topic,
-            'description':evidence_excerpt(video.description,query,900),
-            'subtitles':evidence_excerpt(video.transcript,query,1500),
+            'description':(video.description[:1600] if legacy_mode(service.config.bot) else evidence_excerpt(video.description,query,900)),
+            'subtitles':(video.transcript[:2400] if legacy_mode(service.config.bot) else evidence_excerpt(video.transcript,query,1500)),
             'url':video.url, 'cover':video.cover_url,
             'note':'只能依据这些资料与实际可见封面，不代表完整观看视频。'}}, [video.cover_url] if video.cover_url else [])
 
@@ -92,9 +94,10 @@ def run_sharing_task(service, chat, target, persona, *, mode='AUTO', now=None, b
         with service.proactive_articles._lock:
             seen = set(service.proactive_articles.sent.get(chat, []))
         covers = []
-        for page in service.web_search.search(query, fresh=True, timeout_seconds=min(15, remaining),
-                include_baike=service.config.bot.get('baidu_baike_enabled',True))[:3]:
-            if page.url in seen or not any(_related(t, {'title':page.title, 'description':page.content}) for t in topics):
+        for page in service.web_search.search(query, fresh=True, timeout_seconds=min(60, remaining),
+                include_baike=service.config.bot.get('baidu_baike_enabled',True),cancelled=cancelled,
+                selector=service._web_candidate_selector(profile,chat,cancelled=cancelled))[:3]:
+            if page.url in seen:
                 continue
             pages[page.url] = page
             urls = []
@@ -108,7 +111,7 @@ def run_sharing_task(service, chat, target, persona, *, mode='AUTO', now=None, b
                         covers.append(url)
             except Exception:
                 pass
-            results.append({'url':page.url, 'title':page.title, 'text':evidence_excerpt(page.content,query),
+            results.append({'url':page.url, 'title':page.title, 'text':(page.content[:2200] if legacy_mode(service.config.bot) else evidence_excerpt(page.content,query)),
                             'excerpt':True,'images':urls})
         return observation({'status':'OK' if results else 'NO_RESULTS','pages':results}, covers)
 
@@ -145,7 +148,7 @@ def run_sharing_task(service, chat, target, persona, *, mode='AUTO', now=None, b
                  AgentTool('search_pages','query','搜索主题网页、文章、公众号等公开正文及实际图片，可用于链接、图片或正文截图。',search_pages,True)]
     if mode != 'NEWS':
         tools.append(AgentTool('recall_chat','query','必要时查本群更早的偏好或话题；当前已有足够上下文时不用调用。',recall_chat))
-    system = build_compact_system_prompt(persona, [], target_type='group', stickers_enabled=False)
+    system = build_compact_system_prompt(persona, [], target_type='group', stickers_enabled=False, legacy=legacy_mode(service.config.bot), free_mode=bool(service.config.bot.get("roleplay_free_mode",False)))
     system += voice_capability_rule(automatic_voice=bool(service.config.bot.get('voice_enabled',False)),
         connected=bool(service._running and service._adapter and service._adapter.connected),
         max_chars=service.config.bot.get('voice_max_chars',30))
@@ -156,6 +159,8 @@ def run_sharing_task(service, chat, target, persona, *, mode='AUTO', now=None, b
                '视频、网页、图片必须真实相关，拒绝擦边和色情；不凭标题假称看过整段视频。'
                '新闻按当前角色语气概括事实，不固定所有角色的称呼；包含国服、日服、国际服，正确处理日期时态、未确认消息，'
                '没有新消息就说明没有核实到，不用旧闻凑数。不受普通聊天气泡字数限制。')
+    from .shared_memory import shared_memory_block
+    system += shared_memory_block(service, chat)
     prompt = json.dumps({'mode':mode,'topics':topics,'last_share':str(target.get('_last_share') or '')[:300],
                          'time':str(now or __import__('datetime').datetime.now())}, ensure_ascii=False)
 
@@ -175,7 +180,7 @@ def run_sharing_task(service, chat, target, persona, *, mode='AUTO', now=None, b
         return result
 
     run = AgentRunner().run(call,[{'role':'user','content':prompt}],system,tools,
-        max_steps=service.config.bot.get('agent_max_steps',4), timeout=max(90, service.config.bot.get('agent_timeout_seconds',90)),
+        max_steps=agent_budget(service.config.bot)[0], timeout=max(90, agent_budget(service.config.bot)[1]),
         cancelled=cancelled, require_network=mode == 'NEWS', final_format=(
             '\n【本任务最终数据格式】这是程序内部分享决策，不是直接发到微信的聊天文本。'
             '最终 action=final，text 必须是一个 JSON 字符串，其对象包含 kind（WAIT/TEXT/VIDEO/ARTICLE/IMAGE/SCREENSHOT/NEWS）。'

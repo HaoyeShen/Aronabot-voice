@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import sqlite3
 import threading
 import time
@@ -123,8 +124,9 @@ class MemoryStore:
             return cur.rowcount > 0
 
     def add_user(self, chat: str, content: str, sender: str = "", msg_type: str = "text",
-                 external_id: str = "", meta: dict | None = None) -> int | None:
-        created = time.time()
+                 external_id: str = "", meta: dict | None = None, timestamp: float | None = None) -> int | None:
+        created = float(timestamp) if timestamp is not None else time.time()
+        if not math.isfinite(created) or created <= 0:created=time.time()
         # Only stable, sender-provided IDs are used for dedupe.  Content-only
         # fallback IDs must not suppress a repeated "在吗" forever.
         stable_id = external_id if external_id.startswith("wx") else ""
@@ -146,6 +148,19 @@ class MemoryStore:
             )
             self._conn.commit()
             return int(cur.lastrowid) if cur.rowcount else None
+
+    def enrich_user(self, row_id: int, chat: str, content: str, meta: dict) -> None:
+        """Keep decoded card evidence on the already-deduplicated incoming row."""
+        with self._lock:
+            row = self._conn.execute("SELECT meta FROM messages WHERE id=? AND chat=? AND role='user'",
+                                     (row_id, chat)).fetchone()
+            if row is None:
+                return
+            previous = json.loads(row['meta'] or '{}')
+            previous.update(meta)
+            self._conn.execute('UPDATE messages SET content=?,meta=? WHERE id=?',
+                               (content, json.dumps(previous, ensure_ascii=False), row_id))
+            self._conn.commit()
 
     def add_outgoing(self, chat: str, content: str, sender: str = "老师（本人手动）",
                      msg_type: str = "text", external_id: str = "",

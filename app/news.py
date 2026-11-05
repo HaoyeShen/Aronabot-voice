@@ -31,6 +31,7 @@ from .model_audit import model_call
 from .agent_runtime import task_entry
 from .model_client import make_client
 from .paths import DATA
+from .news_sources import SOURCES, FEEDS, SourceCandidates
 from .prompting import reduce_ellipsis
 from .news_evidence import (ArticleEvidence, published_time, is_recent, news_now,
                             read_article, fingerprints, normal_text)
@@ -668,6 +669,56 @@ class NewsService:
             self._source_errors.append('日服官网')
             return []
 
+    def _publisher_feed(self, source, timeout):
+        url = FEEDS.get(source.host)
+        if not url:
+            return SourceCandidates()
+        try:
+            raw = _http_text(url, min(4., timeout))
+            if '<!DOCTYPE' in raw or '<!ENTITY' in raw:
+                raise ValueError('unsafe or non-feed response')
+            root = ET.fromstring(raw)
+            found = []
+            for row in root.iter():
+                if row.tag.rsplit('}',1)[-1] not in ('item','entry'):
+                    continue
+                fields = {child.tag.rsplit('}',1)[-1]:child for child in row}
+                value = lambda key: ''.join(fields[key].itertext()) if key in fields else ''
+                title = _clean(value('title'))
+                description = _strip_html(value('description') or value('summary'))
+                link = value('link')
+                if not link and 'link' in fields:
+                    link = fields['link'].get('href','')
+                combined = (title+' '+description).lower()
+                if (not source.accepts(link) or self._video_url(link)
+                        or not any(term in combined for term in RELEVANT_TERMS)):
+                    continue
+                found.append(NewsItem(source.region,title,link,source.name,description[:1800],
+                    published_at=published_time(value('pubDate') or value('published') or value('date'))))
+            return SourceCandidates(found, 'read')
+        except Exception as exc:
+            log.debug('新闻发布者RSS不可用 · %s · %s',source.name,type(exc).__name__)
+            return SourceCandidates((), 'unavailable')
+
+    def _publisher_search(self, source, timeout):
+        """One publisher per job; never attribute off-domain results to it."""
+        accepted = self._publisher_feed(source, timeout)
+        feed_state = getattr(accepted, 'feed_state', 'not_configured')
+        query = source.topic + ' site:' + source.host
+        mkt = {'国服':'zh-CN','日服':'ja-JP','国际服':'en-US'}[source.region]
+        cap = min(4., timeout)
+        rows = self._search(query, source.region, mkt, cap)
+        filtered = [item for item in rows if source.accepts(item.url)]
+        if not filtered:
+            filtered = [item for item in self._rss_search(query, source.region, cap) if source.accepts(item.url)]
+        seen = {item.url for item in accepted}
+        for item in filtered:
+            if item.url not in seen:
+                accepted.append(item);seen.add(item.url)
+        for item in accepted:
+            item.source = source.name
+        return SourceCandidates(accepted, feed_state)
+
     def _rss_search(self, query: str, region: str, timeout: float) -> list[NewsItem]:
         """Additional discovery path; RSS dates are never publication proof."""
         url = 'https://www.bing.com/search?format=rss&q=' + urllib.parse.quote_plus(query + ' 新闻')
@@ -827,7 +878,7 @@ class NewsService:
             '日服': 'ブルーアーカイブ (site:bluearchive.jp OR site:4gamer.net OR site:game.watch.impress.co.jp) ニュース',
             '国际服': 'Blue Archive (site:forum.nexon.com/bluearchive-en OR site:bluearchive.nexon.com OR site:gematsu.com) news update',
         }
-        with ThreadPoolExecutor(max_workers=6, thread_name_prefix='arona-news') as pool:
+        with ThreadPoolExecutor(max_workers=12, thread_name_prefix='arona-news') as pool:
             jobs = [('国服', pool.submit(self._official_cn, timeout, 12)),
                     ('日服', pool.submit(self._official_jp, timeout)),
                     ('国际服', pool.submit(self._official_list, '国际服', 'https://forum.nexon.com/bluearchive-en/main', 'board_view?', timeout))]
@@ -842,6 +893,9 @@ class NewsService:
                     (self._bilibili, (query, region, timeout, fetch_limit)),
                     (self._search, (sites[region], region, mkt, timeout)),
                     (self._rss_search, (second, region, timeout))))
+            publisher_jobs = [(source, pool.submit(self._publisher_search, source, timeout))
+                              for source in SOURCES]
+            jobs.extend((source.region, job) for source, job in publisher_jobs)
             candidates = []
             seen_urls = set()
             for region, job in jobs:
@@ -879,7 +933,14 @@ class NewsService:
                 bounded.extend(sorted(rows, key=lambda x: bool(x.published_at), reverse=True)[:18])
             for item in pool.map(enrich, bounded):
                 result[item.region].append(item)
-        self._fetch_report = {'sources': len(jobs), 'candidates': len(candidates),
+        self._fetch_report = {'sources': len(SOURCES), 'discovery_jobs': len(jobs),
+                              'publishers': {source.host: {'name': source.name, 'region': source.region,
+                                  'state': ('error' if job.exception() else
+                                            'candidates' if job.result() else 'no_verified_candidates'),
+                                  'candidates': 0 if job.exception() else len(job.result()),
+                                  'feed': 'error' if job.exception() else getattr(job.result(),'feed_state','not_configured')}
+                                  for source, job in publisher_jobs},
+                              'candidates': len(candidates),
                               'unavailable': sorted(set(self._source_errors)),
                               'by_region': {region: {
                                   'candidates': sum(x.region == region for x in candidates),
