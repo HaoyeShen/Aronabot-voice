@@ -49,7 +49,7 @@ def main():
         config.bot['reasoning_intensity']='high'
         assert config.active_profile()['_reasoning_intensity']=='high'
         config.save()
-        assert '_reasoning_intensity' not in json.loads((root/'config.json').read_text())['model_profiles'][0]
+        assert '_reasoning_intensity' not in json.loads((root/'config.json').read_text(encoding='utf-8'))['model_profiles'][0]
         # Separate preview and external submission; pending receipts survive failures.
         post={'id':'p1','tid':'1','username':'friend','nickname':'friend',
               'text':'今天终于完成了一个小目标。','create_time':time.time(),'comments':[]}
